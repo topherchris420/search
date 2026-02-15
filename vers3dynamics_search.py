@@ -18,7 +18,6 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
-import json
 from datetime import datetime
 import logging
 
@@ -168,7 +167,11 @@ class RFProcessor:
         """Get current spectral state for visualization"""
         with self.lock:
             nodes_data = []
+            powers = []
+            stabilities = []
             for node in self.bands:
+                powers.append(node.power)
+                stabilities.append(node.stability)
                 nodes_data.append({
                     'frequency': node.frequency,
                     'power': node.power,
@@ -179,10 +182,22 @@ class RFProcessor:
                     'position': node.position
                 })
             
+            num_anomalies = sum(1 for n in self.bands if n.anomaly_score > self.config.ANOMALY_THRESHOLD)
+            strongest_node = max(self.bands, key=lambda n: n.power)
+            average_power = float(np.mean(powers)) if powers else -90.0
+            average_stability = float(np.mean(stabilities)) if stabilities else 1.0
+
             return {
                 'nodes': nodes_data,
                 'timestamp': datetime.now().isoformat(),
-                'num_anomalies': sum(1 for n in self.bands if n.anomaly_score > self.config.ANOMALY_THRESHOLD)
+                'num_anomalies': num_anomalies,
+                'summary': {
+                    'average_power': average_power,
+                    'average_stability': average_stability,
+                    'strongest_frequency': strongest_node.frequency,
+                    'strongest_power': strongest_node.power,
+                    'anomaly_ratio': num_anomalies / self.config.NUM_BANDS
+                }
             }
 
 
@@ -282,20 +297,19 @@ class Visualizer:
         power_normalized = (powers - powers.min()) / (powers.max() - powers.min() + 1e-6)
         sizes = 5 + power_normalized * 20
         
-        # Color based on anomaly score and band class
+        # Color and opacity based on anomaly score, class, and stability
         colors = []
         for node in nodes:
+            stability_alpha = max(0.2, min(1.0, node['stability'] * 0.8 + 0.2))
             if node['anomaly_score'] > self.config.ANOMALY_THRESHOLD:
-                colors.append('red')  # Anomaly
+                base_rgb = (255, 0, 0)  # anomaly
             elif node['band_class'] == 'low':
-                colors.append('cyan')
+                base_rgb = (0, 255, 255)
             elif node['band_class'] == 'mid':
-                colors.append('lime')
+                base_rgb = (50, 255, 50)
             else:
-                colors.append('magenta')
-        
-        # Opacity based on stability
-        opacities = [n['stability'] * 0.8 + 0.2 for n in nodes]
+                base_rgb = (255, 0, 255)
+            colors.append(f"rgba({base_rgb[0]}, {base_rgb[1]}, {base_rgb[2]}, {stability_alpha:.3f})")
         
         # Create hover text
         hover_texts = []
@@ -316,7 +330,6 @@ class Visualizer:
             marker=dict(
                 size=sizes,
                 color=colors,
-                opacity=opacities,
                 line=dict(color='white', width=0.5)
             ),
             text=hover_texts,
@@ -393,6 +406,7 @@ class Vers3DynamicsSearch:
         self.visualizer = Visualizer(self.config)
         self.running = False
         self.acquisition_thread = None
+        self.started_at = None
         
         logger.info("Vers3Dynamics Search initialized")
         logger.info(f"Monitoring: {self.config.FREQ_START/1e6:.1f} - {self.config.FREQ_END/1e9:.3f} GHz")
@@ -401,6 +415,7 @@ class Vers3DynamicsSearch:
     def start_acquisition(self):
         """Start RF spectrum acquisition"""
         self.running = True
+        self.started_at = datetime.now()
         self.acquisition_thread = Thread(target=self._acquisition_loop, daemon=True)
         self.acquisition_thread.start()
         logger.info("Spectrum acquisition started")
@@ -433,6 +448,20 @@ class Vers3DynamicsSearch:
         """Get current visualization data as JSON"""
         spectral_state = self.processor.get_spectral_state()
         return self.visualizer.create_3d_scene(spectral_state)
+
+    def get_status_snapshot(self) -> Dict:
+        """Return current runtime status metrics for the API/UI."""
+        uptime_seconds = 0.0
+        if self.started_at:
+            uptime_seconds = (datetime.now() - self.started_at).total_seconds()
+
+        return {
+            'running': self.running,
+            'bands': self.config.NUM_BANDS,
+            'freq_range': f"{self.config.FREQ_START/1e6:.1f} - {self.config.FREQ_END/1e9:.3f} GHz",
+            'sample_rate_hz': self.config.SAMPLE_RATE,
+            'uptime_seconds': round(uptime_seconds, 1)
+        }
 
 
 # =============================================================================
@@ -481,6 +510,10 @@ HTML_TEMPLATE = """
             gap: 20px;
             align-items: center;
         }
+
+        .status strong {
+            color: #00ffff;
+        }
         
         .status-item {
             display: flex;
@@ -524,6 +557,37 @@ HTML_TEMPLATE = """
             border-radius: 8px;
             padding: 15px;
             min-width: 250px;
+        }
+
+        .metrics-panel {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            background: rgba(0, 0, 0, 0.85);
+            border: 1px solid #00ffff;
+            border-radius: 8px;
+            padding: 15px;
+            min-width: 280px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .metrics-panel h3 {
+            margin-bottom: 8px;
+            font-size: 14px;
+            border-bottom: 1px solid #00ffff;
+            padding-bottom: 5px;
+        }
+
+        .metrics-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .metrics-value {
+            color: #00ffff;
+            font-weight: bold;
         }
         
         .legend-panel h3 {
@@ -583,6 +647,9 @@ HTML_TEMPLATE = """
             <div class="status-item">
                 <span id="update-counter">Updates: 0</span>
             </div>
+            <div class="status-item">
+                <span>Anomalies: <strong id="anomaly-counter">0</strong></span>
+            </div>
         </div>
     </div>
     
@@ -617,6 +684,15 @@ HTML_TEMPLATE = """
             <span>◆ Observer Platform</span>
         </div>
     </div>
+
+    <div class="metrics-panel">
+        <h3>LIVE METRICS</h3>
+        <div class="metrics-row"><span>Avg Power</span><span class="metrics-value" id="avg-power">-</span></div>
+        <div class="metrics-row"><span>Avg Stability</span><span class="metrics-value" id="avg-stability">-</span></div>
+        <div class="metrics-row"><span>Strongest Band</span><span class="metrics-value" id="strongest-band">-</span></div>
+        <div class="metrics-row"><span>Anomaly Ratio</span><span class="metrics-value" id="anomaly-ratio">-</span></div>
+        <div class="metrics-row"><span>Last Update</span><span class="metrics-value" id="last-update">-</span></div>
+    </div>
     
     <script>
         let updateCount = 0;
@@ -648,9 +724,25 @@ HTML_TEMPLATE = """
                     updateCount++;
                     document.getElementById('update-counter').textContent = 
                         `Updates: ${updateCount}`;
+
+                    if (data.summary) {
+                        document.getElementById('avg-power').textContent = `${data.summary.average_power.toFixed(1)} dBm`;
+                        document.getElementById('avg-stability').textContent = `${(data.summary.average_stability * 100).toFixed(1)}%`;
+                        document.getElementById('strongest-band').textContent = 
+                            `${(data.summary.strongest_frequency / 1e6).toFixed(1)} MHz @ ${data.summary.strongest_power.toFixed(1)} dBm`;
+                        document.getElementById('anomaly-ratio').textContent = `${(data.summary.anomaly_ratio * 100).toFixed(1)}%`;
+                    }
+
+                    if (data.timestamp) {
+                        const localTime = new Date(data.timestamp).toLocaleTimeString();
+                        document.getElementById('last-update').textContent = localTime;
+                    }
+
+                    document.getElementById('anomaly-counter').textContent = data.num_anomalies ?? 0;
                 })
                 .catch(error => {
                     console.error('Error updating visualization:', error);
+                    document.getElementById('last-update').textContent = 'Connection issue';
                 });
         }
         
@@ -683,10 +775,17 @@ def index():
 def get_spectrum():
     """API endpoint for spectrum data"""
     try:
-        plot_json = system.get_visualization_data()
+        if system is None:
+            return jsonify({'error': 'System not initialized'}), 503
+
+        spectral_state = system.processor.get_spectral_state()
+        plot_json = system.visualizer.create_3d_scene(spectral_state)
         return jsonify({
             'plot': plot_json,
-            'status': 'active'
+            'status': 'active',
+            'num_anomalies': spectral_state['num_anomalies'],
+            'summary': spectral_state['summary'],
+            'timestamp': spectral_state['timestamp']
         })
     except Exception as e:
         logger.error(f"API error: {e}")
@@ -695,11 +794,9 @@ def get_spectrum():
 @app.route('/api/status')
 def get_status():
     """Get system status"""
-    return jsonify({
-        'running': system.running,
-        'bands': system.config.NUM_BANDS,
-        'freq_range': f"{system.config.FREQ_START/1e6:.1f} - {system.config.FREQ_END/1e9:.3f} GHz"
-    })
+    if system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    return jsonify(system.get_status_snapshot())
 
 
 # =============================================================================
