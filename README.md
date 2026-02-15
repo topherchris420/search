@@ -18,6 +18,8 @@ Vers3Dynamics Search transforms invisible electromagnetic activity into an intui
 - **3D Visualization**: Interactive browser-based interface with spatial field representation
 - **Temporal Analysis**: Historical pattern tracking and stability metrics
 - **Situational Awareness**: Observer-centric perspective showing the surrounding EM environment
+- **Live Telemetry Panel**: Real-time rollups for average power, strongest active band, anomaly ratio, and update timestamp
+- **System Health API**: Extended `/api/status` telemetry including uptime and configured sample rate
 
 ---
 
