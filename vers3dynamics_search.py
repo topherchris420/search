@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict
 from datetime import datetime
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # =============================================================================
 
+@dataclass
 class Config:
     """System configuration parameters"""
     # Frequency spectrum
@@ -54,6 +56,15 @@ class Config:
     SIMULATE_SDR = True
     NUM_SIGNAL_SOURCES = 8
 
+    @classmethod
+    def from_env(cls) -> "Config":
+        """Load configuration from environment variables for deployment flexibility."""
+        config = cls()
+        config.PORT = int(os.getenv("RF_MONITOR_PORT", config.PORT))
+        config.SAMPLE_RATE = max(1, int(os.getenv("RF_SAMPLE_RATE_HZ", config.SAMPLE_RATE)))
+        config.ANOMALY_THRESHOLD = float(os.getenv("RF_ANOMALY_SIGMA", config.ANOMALY_THRESHOLD))
+        return config
+
 
 # =============================================================================
 # DATA STRUCTURES
@@ -69,6 +80,8 @@ class SpectralNode:
     anomaly_score: float   # Deviation from baseline
     stability: float       # Temporal stability metric (0-1)
     band_class: str       # "low", "mid", "high" frequency classification
+    pattern: str         # "emerging", "fading", "stable"
+    trend: float         # temporal trend slope
     position: Tuple[float, float, float]  # 3D coordinates
     history: deque         # Recent power measurements
 
@@ -133,6 +146,8 @@ class RFProcessor:
                 anomaly_score=0.0,
                 stability=1.0,
                 band_class=band_class,
+                pattern="stable",
+                trend=0.0,
                 position=position,
                 history=deque(maxlen=self.config.WINDOW_SIZE)
             )
@@ -162,6 +177,24 @@ class RFProcessor:
                         # Stability metric (inverse of normalized variance)
                         normalized_var = node.variance / (abs(node.baseline) + 1e-6)
                         node.stability = max(0, 1 - normalized_var / self.config.STABILITY_THRESHOLD)
+
+                        node.trend = self._compute_trend(history_array)
+                        if node.trend > 0.08:
+                            node.pattern = "emerging"
+                        elif node.trend < -0.08:
+                            node.pattern = "fading"
+                        else:
+                            node.pattern = "stable"
+
+    @staticmethod
+    def _compute_trend(history: np.ndarray) -> float:
+        """Estimate trend with linear fit over normalized time."""
+        if len(history) < 5:
+            return 0.0
+        y = history[-25:] if len(history) >= 25 else history
+        x = np.linspace(0.0, 1.0, len(y))
+        slope, _ = np.polyfit(x, y, 1)
+        return float(slope)
     
     def get_spectral_state(self) -> Dict:
         """Get current spectral state for visualization"""
@@ -178,6 +211,8 @@ class RFProcessor:
                     'baseline': node.baseline,
                     'anomaly_score': node.anomaly_score,
                     'stability': node.stability,
+                    'pattern': node.pattern,
+                    'trend': node.trend,
                     'band_class': node.band_class,
                     'position': node.position
                 })
@@ -186,6 +221,11 @@ class RFProcessor:
             strongest_node = max(self.bands, key=lambda n: n.power)
             average_power = float(np.mean(powers)) if powers else -90.0
             average_stability = float(np.mean(stabilities)) if stabilities else 1.0
+            pattern_counts = {
+                'emerging': sum(1 for n in self.bands if n.pattern == 'emerging'),
+                'fading': sum(1 for n in self.bands if n.pattern == 'fading'),
+                'stable': sum(1 for n in self.bands if n.pattern == 'stable')
+            }
 
             return {
                 'nodes': nodes_data,
@@ -196,7 +236,8 @@ class RFProcessor:
                     'average_stability': average_stability,
                     'strongest_frequency': strongest_node.frequency,
                     'strongest_power': strongest_node.power,
-                    'anomaly_ratio': num_anomalies / self.config.NUM_BANDS
+                    'anomaly_ratio': num_anomalies / self.config.NUM_BANDS,
+                    'pattern_counts': pattern_counts
                 }
             }
 
@@ -320,6 +361,7 @@ class Visualizer:
                    f"Baseline: {node['baseline']:.1f} dBm<br>"
                    f"Anomaly: {node['anomaly_score']:.2f}σ<br>"
                    f"Stability: {node['stability']:.2%}<br>"
+                   f"Pattern: {node['pattern']} ({node['trend']:+.2f})<br>"
                    f"Class: {node['band_class']}")
             hover_texts.append(text)
         
@@ -400,7 +442,7 @@ class Vers3DynamicsSearch:
     """Main system coordinator"""
     
     def __init__(self):
-        self.config = Config()
+        self.config = Config.from_env()
         self.processor = RFProcessor(self.config)
         self.source = SpectrumSource(self.config)
         self.visualizer = Visualizer(self.config)
@@ -461,6 +503,25 @@ class Vers3DynamicsSearch:
             'freq_range': f"{self.config.FREQ_START/1e6:.1f} - {self.config.FREQ_END/1e9:.3f} GHz",
             'sample_rate_hz': self.config.SAMPLE_RATE,
             'uptime_seconds': round(uptime_seconds, 1)
+        }
+
+    def get_architecture_snapshot(self) -> Dict:
+        """Describe orchestrated service architecture and active operating profile."""
+        return {
+            'system': 'Vers3Dynamics Search',
+            'pipeline': [
+                'RF acquisition (SDR/simulator)',
+                'Band aggregation (64 channels)',
+                'Baseline/anomaly analytics',
+                'Pattern recognition (emerging/fading/stable)',
+                '3D observer-centric visualization'
+            ],
+            'operating_profile': {
+                'frequency_range_hz': [self.config.FREQ_START, self.config.FREQ_END],
+                'monitored_bands': self.config.NUM_BANDS,
+                'temporal_window_samples': self.config.WINDOW_SIZE,
+                'anomaly_sigma_threshold': self.config.ANOMALY_THRESHOLD
+            }
         }
 
 
@@ -691,6 +752,7 @@ HTML_TEMPLATE = """
         <div class="metrics-row"><span>Avg Stability</span><span class="metrics-value" id="avg-stability">-</span></div>
         <div class="metrics-row"><span>Strongest Band</span><span class="metrics-value" id="strongest-band">-</span></div>
         <div class="metrics-row"><span>Anomaly Ratio</span><span class="metrics-value" id="anomaly-ratio">-</span></div>
+        <div class="metrics-row"><span>Emerging/Fading</span><span class="metrics-value" id="pattern-counts">-</span></div>
         <div class="metrics-row"><span>Last Update</span><span class="metrics-value" id="last-update">-</span></div>
     </div>
     
@@ -731,6 +793,10 @@ HTML_TEMPLATE = """
                         document.getElementById('strongest-band').textContent = 
                             `${(data.summary.strongest_frequency / 1e6).toFixed(1)} MHz @ ${data.summary.strongest_power.toFixed(1)} dBm`;
                         document.getElementById('anomaly-ratio').textContent = `${(data.summary.anomaly_ratio * 100).toFixed(1)}%`;
+                        if (data.summary.pattern_counts) {
+                            const { emerging, fading } = data.summary.pattern_counts;
+                            document.getElementById('pattern-counts').textContent = `${emerging}/${fading}`;
+                        }
                     }
 
                     if (data.timestamp) {
@@ -803,6 +869,12 @@ def get_status():
     """Get system status"""
     active_system = ensure_system_initialized()
     return jsonify(active_system.get_status_snapshot())
+
+@app.route('/api/architecture')
+def get_architecture():
+    """Expose orchestrated system architecture and operating profile."""
+    active_system = ensure_system_initialized()
+    return jsonify(active_system.get_architecture_snapshot())
 
 
 # =============================================================================

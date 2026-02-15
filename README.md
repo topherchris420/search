@@ -17,9 +17,11 @@ Vers3Dynamics Search transforms invisible electromagnetic activity into an intui
 - **Anomaly Detection**: Statistical baseline modeling with automatic detection of unusual spectral activity
 - **3D Visualization**: Interactive browser-based interface with spatial field representation
 - **Temporal Analysis**: Historical pattern tracking and stability metrics
+- **Pattern Recognition**: Emerging/fading signal activity classification from trend analysis
 - **Situational Awareness**: Observer-centric perspective showing the surrounding EM environment
 - **Live Telemetry Panel**: Real-time rollups for average power, strongest active band, anomaly ratio, and update timestamp
 - **System Health API**: Extended `/api/status` telemetry including uptime and configured sample rate
+- **Architecture API**: `/api/architecture` endpoint describing orchestrated pipeline and operating profile
 
 ---
 
@@ -117,6 +119,15 @@ class Config:
     # Visualization
     PORT = 5000            # Web server port
 ```
+
+
+### Runtime Environment Overrides
+
+You can tune deployment behavior through environment variables:
+
+- `RF_MONITOR_PORT`: Flask listen port (default `5000`)
+- `RF_SAMPLE_RATE_HZ`: Acquisition sample rate in Hz (default `10`)
+- `RF_ANOMALY_SIGMA`: Anomaly threshold in σ (default `2.5`)
 
 ### SDR Integration
 
