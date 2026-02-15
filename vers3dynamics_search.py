@@ -282,40 +282,33 @@ class Visualizer:
     
     def __init__(self, config: Config):
         self.config = config
+        self.max_hold_power = np.full(self.config.NUM_BANDS, -np.inf)
         
     def create_3d_scene(self, spectral_state: Dict) -> str:
         """Create Plotly 3D visualization"""
         nodes = spectral_state['nodes']
-        
-        # Extract data for visualization
-        x = [n['position'][0] for n in nodes]
-        y = [n['position'][1] for n in nodes]
-        z = [n['position'][2] for n in nodes]
-        
-        # Size based on power (normalized)
+        num_nodes = len(nodes)
+
+        # Terrain coordinates: frequency on X, power on Y, stability-derived depth on Z
+        freq_mhz = np.array([n['frequency'] / 1e6 for n in nodes])
         powers = np.array([n['power'] for n in nodes])
+        stabilities = np.array([n['stability'] for n in nodes])
+        z_depth = stabilities * 25.0 - 12.5
+
+        # Keep a max-hold history for persistent transient visibility
+        if len(self.max_hold_power) != num_nodes:
+            self.max_hold_power = np.full(num_nodes, -np.inf)
+        self.max_hold_power = np.maximum(self.max_hold_power, powers)
+
+        # Marker sizes scale with signal power intensity
         power_normalized = (powers - powers.min()) / (powers.max() - powers.min() + 1e-6)
-        sizes = 5 + power_normalized * 20
-        
-        # Color and opacity based on anomaly score, class, and stability
-        colors = []
-        for node in nodes:
-            stability_alpha = max(0.2, min(1.0, node['stability'] * 0.8 + 0.2))
-            if node['anomaly_score'] > self.config.ANOMALY_THRESHOLD:
-                base_rgb = (255, 0, 0)  # anomaly
-            elif node['band_class'] == 'low':
-                base_rgb = (0, 255, 255)
-            elif node['band_class'] == 'mid':
-                base_rgb = (50, 255, 50)
-            else:
-                base_rgb = (255, 0, 255)
-            colors.append(f"rgba({base_rgb[0]}, {base_rgb[1]}, {base_rgb[2]}, {stability_alpha:.3f})")
+        sizes = 5 + power_normalized * 14
         
         # Create hover text
         hover_texts = []
         for node in nodes:
-            freq_mhz = node['frequency'] / 1e6
-            text = (f"Freq: {freq_mhz:.1f} MHz<br>"
+            node_freq_mhz = node['frequency'] / 1e6
+            text = (f"Freq: {node_freq_mhz:.1f} MHz<br>"
                    f"Power: {node['power']:.1f} dBm<br>"
                    f"Baseline: {node['baseline']:.1f} dBm<br>"
                    f"Anomaly: {node['anomaly_score']:.2f}σ<br>"
@@ -323,23 +316,84 @@ class Visualizer:
                    f"Class: {node['band_class']}")
             hover_texts.append(text)
         
-        # Create spectral nodes trace
+        # Main spectral wireframe trace
         nodes_trace = go.Scatter3d(
-            x=x, y=y, z=z,
-            mode='markers',
+            x=freq_mhz,
+            y=powers,
+            z=z_depth,
+            mode='lines+markers',
+            line=dict(
+                color='rgba(80, 230, 255, 0.55)',
+                width=4
+            ),
             marker=dict(
                 size=sizes,
-                color=colors,
-                line=dict(color='white', width=0.5)
+                color=powers,
+                colorscale='Turbo',
+                cmin=-95,
+                cmax=-20,
+                opacity=0.95,
+                line=dict(color='rgba(170, 245, 255, 0.9)', width=0.7),
+                colorbar=dict(
+                    title='Power (dBm)',
+                    thickness=12,
+                    len=0.68,
+                    x=1.02,
+                    y=0.55,
+                    outlinecolor='rgba(0, 255, 255, 0.5)',
+                    tickfont=dict(color='rgba(184, 242, 255, 0.9)')
+                )
             ),
             text=hover_texts,
             hoverinfo='text',
-            name='Spectral Nodes'
+            name='Spectral Terrain'
+        )
+
+        # Persistent max-hold ghost trace
+        max_hold_trace = go.Scatter3d(
+            x=freq_mhz,
+            y=self.max_hold_power,
+            z=np.full(num_nodes, 13.5),
+            mode='lines',
+            line=dict(color='rgba(255, 85, 255, 0.45)', width=3, dash='dot'),
+            hovertemplate='Max Hold<br>%{x:.1f} MHz<br>%{y:.1f} dBm<extra></extra>',
+            name='Max Hold Ghost'
+        )
+
+        # Semi-transparent reference plane at noise floor
+        x_plane = np.array([[freq_mhz.min(), freq_mhz.max()], [freq_mhz.min(), freq_mhz.max()]])
+        y_plane = np.full((2, 2), -90.0)
+        z_plane = np.array([[-14.0, -14.0], [14.0, 14.0]])
+        noise_floor_plane = go.Surface(
+            x=x_plane,
+            y=y_plane,
+            z=z_plane,
+            showscale=False,
+            opacity=0.2,
+            colorscale=[[0, 'rgba(0, 100, 140, 0.3)'], [1, 'rgba(0, 210, 255, 0.3)']],
+            hoverinfo='skip',
+            name='Noise Floor (-90 dBm)'
+        )
+
+        # Bloom/halo overlay for high anomaly nodes
+        anomaly_nodes = [n for n in nodes if n['anomaly_score'] > self.config.ANOMALY_THRESHOLD]
+        anomaly_bloom_trace = go.Scatter3d(
+            x=[n['frequency'] / 1e6 for n in anomaly_nodes],
+            y=[n['power'] for n in anomaly_nodes],
+            z=[(n['stability'] * 25.0 - 12.5) for n in anomaly_nodes],
+            mode='markers',
+            marker=dict(
+                size=26,
+                color='rgba(255, 30, 140, 0.25)',
+                line=dict(color='rgba(255, 90, 180, 0.6)', width=1.2)
+            ),
+            hoverinfo='skip',
+            name='Anomaly Bloom'
         )
         
         # Observer origin
         observer_trace = go.Scatter3d(
-            x=[0], y=[0], z=[0],
+            x=[float(np.mean(freq_mhz))], y=[-88], z=[-11],
             mode='markers',
             marker=dict(
                 size=15,
@@ -353,7 +407,7 @@ class Visualizer:
         )
         
         # Create figure
-        fig = go.Figure(data=[nodes_trace, observer_trace])
+        fig = go.Figure(data=[noise_floor_plane, max_hold_trace, nodes_trace, anomaly_bloom_trace, observer_trace])
         
         # Layout
         fig.update_layout(
@@ -362,28 +416,46 @@ class Visualizer:
                      f"<sub>Timestamp: {spectral_state['timestamp']} | "
                      f"Anomalies: {spectral_state['num_anomalies']}</sub>",
                 x=0.5,
-                xanchor='center'
+                xanchor='center',
+                font=dict(color='rgba(130, 240, 255, 0.95)', size=20)
             ),
             scene=dict(
-                xaxis=dict(title='X (Spatial)', backgroundcolor='rgb(10, 10, 30)', 
-                          gridcolor='rgb(30, 30, 60)', showbackground=True),
-                yaxis=dict(title='Y (Spatial)', backgroundcolor='rgb(10, 10, 30)', 
-                          gridcolor='rgb(30, 30, 60)', showbackground=True),
-                zaxis=dict(title='Z (Frequency)', backgroundcolor='rgb(10, 10, 30)', 
-                          gridcolor='rgb(30, 30, 60)', showbackground=True),
-                bgcolor='rgb(5, 5, 20)',
+                xaxis=dict(
+                    title='Frequency (MHz)',
+                    backgroundcolor='rgb(7, 10, 26)',
+                    gridcolor='rgba(48, 109, 158, 0.45)',
+                    showbackground=True,
+                    zerolinecolor='rgba(0, 255, 255, 0.25)'
+                ),
+                yaxis=dict(
+                    title='Power (dBm)',
+                    range=[-100, -20],
+                    backgroundcolor='rgb(7, 10, 26)',
+                    gridcolor='rgba(48, 109, 158, 0.45)',
+                    showbackground=True,
+                    zerolinecolor='rgba(0, 255, 255, 0.25)'
+                ),
+                zaxis=dict(
+                    title='Stability Field',
+                    range=[-15, 15],
+                    backgroundcolor='rgb(7, 10, 26)',
+                    gridcolor='rgba(48, 109, 158, 0.45)',
+                    showbackground=True,
+                    zerolinecolor='rgba(0, 255, 255, 0.25)'
+                ),
+                bgcolor='rgb(3, 6, 17)',
                 camera=dict(
-                    eye=dict(x=1.5, y=1.5, z=1.2)
+                    eye=dict(x=1.7, y=1.25, z=0.9)
                 )
             ),
-            paper_bgcolor='rgb(0, 0, 15)',
-            font=dict(color='rgb(200, 200, 255)', family='Courier New'),
+            paper_bgcolor='rgb(2, 4, 14)',
+            font=dict(color='rgb(200, 244, 255)', family='Orbitron, Share Tech Mono, monospace'),
             showlegend=True,
             legend=dict(
                 x=0.02,
                 y=0.98,
-                bgcolor='rgba(0, 0, 0, 0.7)',
-                bordercolor='cyan',
+                bgcolor='rgba(2, 10, 28, 0.75)',
+                bordercolor='rgba(0, 255, 255, 0.45)',
                 borderwidth=1
             ),
             margin=dict(l=0, r=0, t=80, b=0)
@@ -476,6 +548,9 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vers3Dynamics Search - RF Spectrum Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         * {
@@ -483,36 +558,63 @@ HTML_TEMPLATE = """
             padding: 0;
             box-sizing: border-box;
         }
+
+        :root {
+            --hud-cyan: #61f4ff;
+            --hud-blue: #1d76ff;
+            --hud-bg: #02040d;
+            --hud-panel: rgba(2, 13, 34, 0.78);
+            --hud-border: rgba(97, 244, 255, 0.72);
+        }
         
         body {
-            font-family: 'Courier New', monospace;
-            background: linear-gradient(135deg, #0a0a1e 0%, #1a0a2e 100%);
-            color: #00ffff;
+            font-family: 'Orbitron', 'Share Tech Mono', monospace;
+            background: radial-gradient(circle at 20% 20%, #041536 0%, #020611 40%, #010309 100%);
+            color: var(--hud-cyan);
             overflow: hidden;
+        }
+
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 20;
+            background: repeating-linear-gradient(
+                to bottom,
+                rgba(150, 240, 255, 0.04) 0px,
+                rgba(150, 240, 255, 0.04) 1px,
+                rgba(0, 0, 0, 0.0) 2px,
+                rgba(0, 0, 0, 0.0) 4px
+            );
+            mix-blend-mode: screen;
         }
         
         .header {
-            background: rgba(0, 0, 0, 0.8);
+            background: linear-gradient(90deg, rgba(0, 7, 22, 0.95), rgba(2, 14, 40, 0.85));
             padding: 15px 30px;
-            border-bottom: 2px solid #00ffff;
+            border-bottom: 1px solid var(--hud-border);
+            box-shadow: 0 0 22px rgba(30, 180, 255, 0.25);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            letter-spacing: 0.08em;
         }
         
         .header h1 {
             font-size: 24px;
-            text-shadow: 0 0 10px #00ffff;
+            text-shadow: 0 0 12px rgba(97, 244, 255, 0.7);
         }
         
         .status {
             display: flex;
             gap: 20px;
             align-items: center;
+            font-family: 'Share Tech Mono', monospace;
         }
 
         .status strong {
-            color: #00ffff;
+            color: var(--hud-cyan);
         }
         
         .status-item {
@@ -525,8 +627,8 @@ HTML_TEMPLATE = """
             width: 12px;
             height: 12px;
             border-radius: 50%;
-            background: #00ff00;
-            box-shadow: 0 0 10px #00ff00;
+            background: #00ff9d;
+            box-shadow: 0 0 10px #00ff9d;
             animation: pulse 2s infinite;
         }
         
@@ -536,65 +638,65 @@ HTML_TEMPLATE = """
         }
         
         .container {
+            position: relative;
             height: calc(100vh - 80px);
             padding: 20px;
+            z-index: 1;
         }
         
         #plot {
             width: 100%;
             height: 100%;
-            border: 2px solid #00ffff;
-            border-radius: 8px;
-            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--hud-border);
+            clip-path: polygon(0 18px, 18px 0, calc(100% - 18px) 0, 100% 18px, 100% calc(100% - 18px), calc(100% - 18px) 100%, 18px 100%, 0 calc(100% - 18px));
+            background: rgba(1, 8, 20, 0.7);
+            box-shadow: inset 0 0 22px rgba(40, 170, 255, 0.22), 0 0 26px rgba(0, 185, 255, 0.15);
+        }
+
+        .hud-panel {
+            position: absolute;
+            background: var(--hud-panel);
+            border: 1px solid var(--hud-border);
+            padding: 15px;
+            color: #bcf7ff;
+            clip-path: polygon(0 14px, 14px 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
+            box-shadow: 0 0 18px rgba(60, 205, 255, 0.28), inset 0 0 24px rgba(25, 105, 180, 0.25);
+            backdrop-filter: blur(1px);
         }
         
         .legend-panel {
-            position: absolute;
             bottom: 30px;
             right: 30px;
-            background: rgba(0, 0, 0, 0.85);
-            border: 1px solid #00ffff;
-            border-radius: 8px;
-            padding: 15px;
-            min-width: 250px;
+            min-width: 280px;
         }
 
         .metrics-panel {
-            position: absolute;
             bottom: 30px;
             left: 30px;
-            background: rgba(0, 0, 0, 0.85);
-            border: 1px solid #00ffff;
-            border-radius: 8px;
-            padding: 15px;
-            min-width: 280px;
+            min-width: 310px;
             font-size: 12px;
             line-height: 1.6;
         }
 
-        .metrics-panel h3 {
-            margin-bottom: 8px;
+        .metrics-panel h3,
+        .legend-panel h3 {
+            margin-bottom: 10px;
             font-size: 14px;
-            border-bottom: 1px solid #00ffff;
+            border-bottom: 1px solid rgba(97, 244, 255, 0.45);
             padding-bottom: 5px;
+            letter-spacing: 0.15em;
         }
 
         .metrics-row {
             display: flex;
             justify-content: space-between;
             gap: 12px;
+            font-family: 'Share Tech Mono', monospace;
         }
 
         .metrics-value {
-            color: #00ffff;
+            color: #8de0ff;
             font-weight: bold;
-        }
-        
-        .legend-panel h3 {
-            margin-bottom: 10px;
-            font-size: 14px;
-            border-bottom: 1px solid #00ffff;
-            padding-bottom: 5px;
         }
         
         .legend-item {
@@ -603,12 +705,14 @@ HTML_TEMPLATE = """
             gap: 10px;
             margin: 8px 0;
             font-size: 12px;
+            font-family: 'Share Tech Mono', monospace;
         }
         
         .color-box {
             width: 20px;
             height: 20px;
-            border: 1px solid #fff;
+            border: 1px solid rgba(190, 248, 255, 0.75);
+            box-shadow: 0 0 10px rgba(88, 208, 255, 0.4);
         }
         
         .loading {
@@ -661,23 +765,23 @@ HTML_TEMPLATE = """
         </div>
     </div>
     
-    <div class="legend-panel">
+    <div class="legend-panel hud-panel">
         <h3>LEGEND</h3>
         <div class="legend-item">
-            <div class="color-box" style="background: cyan;"></div>
-            <span>Low Frequency (VHF/UHF)</span>
+            <div class="color-box" style="background: linear-gradient(90deg, #2c1a92, #00dcff, #ffe600);"></div>
+            <span>Continuous Power Map (Turbo)</span>
         </div>
         <div class="legend-item">
-            <div class="color-box" style="background: lime;"></div>
-            <span>Mid Frequency (L/S Band)</span>
+            <div class="color-box" style="background: rgba(255, 85, 255, 0.65);"></div>
+            <span>Max-Hold Ghost Trace</span>
         </div>
         <div class="legend-item">
-            <div class="color-box" style="background: magenta;"></div>
-            <span>High Frequency (C/X Band)</span>
+            <div class="color-box" style="background: rgba(0, 180, 230, 0.45);"></div>
+            <span>Noise Floor Reference Plane (-90 dBm)</span>
         </div>
         <div class="legend-item">
-            <div class="color-box" style="background: red;"></div>
-            <span>⚠ ANOMALY DETECTED</span>
+            <div class="color-box" style="background: rgba(255, 35, 150, 0.35);"></div>
+            <span>⚠ Anomaly Bloom Halo</span>
         </div>
         <div class="legend-item">
             <div class="color-box" style="background: yellow;"></div>
@@ -685,7 +789,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="metrics-panel">
+    <div class="metrics-panel hud-panel">
         <h3>LIVE METRICS</h3>
         <div class="metrics-row"><span>Avg Power</span><span class="metrics-value" id="avg-power">-</span></div>
         <div class="metrics-row"><span>Avg Stability</span><span class="metrics-value" id="avg-stability">-</span></div>
