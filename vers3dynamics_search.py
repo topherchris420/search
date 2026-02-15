@@ -752,18 +752,18 @@ HTML_TEMPLATE = """
 
         <div class="hud-panel top-bar">
             <div>
-                <div class="hud-title">[ RF_SPACE_MAPPER ]</div>
+                <div class="hud-title">Vers3Dynamics</div>
                 <div class="subtitle">Real-time RF situational analysis and anomaly triage</div>
             </div>
             <div class="status">
-                <div class="pill"><span class="indicator"></span>TRACKING <strong id="anomaly-counter">0</strong> ANOMALIES</div>
+                <div class="pill"><span class="indicator"></span>Tracking<strong id="anomaly-counter">0</strong> ANOMALIES</div>
                 <div class="pill" id="update-counter">Updates: 0</div>
                 <div class="pill" id="last-update-pill">Syncing...</div>
             </div>
         </div>
 
         <div class="hud-panel mapper">
-            <h3>[ RF_SPACE_MAPPER ]</h3>
+            <h3>R.A.I.N. Lab</h3>
             <div class="line"><strong>A-</strong> 2.4 GHz Band</div>
             <div class="line"><strong>B-</strong> 5.0 GHz Band</div>
             <div class="line" style="color:#ff44d7;"><strong>C-</strong> 6.0 GHz Band</div>
