@@ -400,35 +400,33 @@ class Visualizer:
         # Layout
         fig.update_layout(
             title=dict(
-                text=f"Vers3Dynamics Search - Spectral Situational Awareness<br>"
-                     f"<sub>Timestamp: {spectral_state['timestamp']} | "
-                     f"Anomalies: {spectral_state['num_anomalies']}</sub>",
+                text="",
                 x=0.5,
                 xanchor='center'
             ),
             scene=dict(
-                xaxis=dict(title='X (Spatial)', backgroundcolor='rgb(10, 10, 30)', 
-                          gridcolor='rgb(30, 30, 60)', showbackground=True),
-                yaxis=dict(title='Y (Spatial)', backgroundcolor='rgb(10, 10, 30)', 
-                          gridcolor='rgb(30, 30, 60)', showbackground=True),
-                zaxis=dict(title='Z (Frequency)', backgroundcolor='rgb(10, 10, 30)', 
-                          gridcolor='rgb(30, 30, 60)', showbackground=True),
-                bgcolor='rgb(5, 5, 20)',
+                xaxis=dict(title='X Axis', backgroundcolor='rgb(2, 10, 8)',
+                          gridcolor='rgba(0, 255, 180, 0.22)', showbackground=True, zeroline=False),
+                yaxis=dict(title='Y Axis', backgroundcolor='rgb(2, 10, 8)',
+                          gridcolor='rgba(0, 255, 180, 0.22)', showbackground=True, zeroline=False),
+                zaxis=dict(title='Frequency Axis', backgroundcolor='rgb(2, 10, 8)',
+                          gridcolor='rgba(0, 255, 180, 0.22)', showbackground=True, zeroline=False),
+                bgcolor='rgb(1, 8, 6)',
                 camera=dict(
                     eye=dict(x=1.5, y=1.5, z=1.2)
                 )
             ),
-            paper_bgcolor='rgb(0, 0, 15)',
-            font=dict(color='rgb(200, 200, 255)', family='Courier New'),
+            paper_bgcolor='rgb(0, 6, 5)',
+            font=dict(color='rgb(130, 255, 210)', family='Courier New'),
             showlegend=True,
             legend=dict(
                 x=0.02,
                 y=0.98,
-                bgcolor='rgba(0, 0, 0, 0.7)',
-                bordercolor='cyan',
+                bgcolor='rgba(0, 16, 14, 0.75)',
+                bordercolor='rgba(0, 255, 200, 0.5)',
                 borderwidth=1
             ),
-            margin=dict(l=0, r=0, t=80, b=0)
+            margin=dict(l=0, r=0, t=10, b=0)
         )
         
         return fig.to_json()
@@ -539,226 +537,306 @@ HTML_TEMPLATE = """
     <title>Vers3Dynamics Search - RF Spectrum Monitor</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Courier New', monospace;
-            background: linear-gradient(135deg, #0a0a1e 0%, #1a0a2e 100%);
-            color: #00ffff;
-            overflow: hidden;
-        }
-        
-        .header {
-            background: rgba(0, 0, 0, 0.8);
-            padding: 15px 30px;
-            border-bottom: 2px solid #00ffff;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .header h1 {
-            font-size: 24px;
-            text-shadow: 0 0 10px #00ffff;
-        }
-        
-        .status {
-            display: flex;
-            gap: 20px;
-            align-items: center;
+        :root {
+            --neon-primary: #00ff88;
+            --neon-cyan: #00ffd5;
+            --neon-magenta: #a000ff;
+            --hud-bg: rgba(0, 12, 8, 0.72);
+            --hud-border: rgba(0, 255, 170, 0.45);
         }
 
-        .status strong {
-            color: #00ffff;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Courier New', monospace;
+            color: var(--neon-cyan);
+            background:
+                radial-gradient(circle at 20% 10%, rgba(0, 120, 70, 0.25), transparent 45%),
+                radial-gradient(circle at 80% 80%, rgba(0, 70, 100, 0.18), transparent 55%),
+                #030807;
+            overflow: hidden;
+            min-height: 100vh;
         }
-        
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background: repeating-linear-gradient(
+                to bottom,
+                rgba(30, 255, 180, 0.03),
+                rgba(30, 255, 180, 0.03) 1px,
+                transparent 2px,
+                transparent 4px
+            );
+            animation: scanline 5s linear infinite;
+            opacity: 0.35;
         }
-        
-        .indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #00ff00;
-            box-shadow: 0 0 10px #00ff00;
-            animation: pulse 2s infinite;
+
+        @keyframes scanline {
+            from { transform: translateY(-20px); }
+            to { transform: translateY(20px); }
         }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+
+        .app-shell {
+            position: relative;
+            height: 100vh;
+            width: 100vw;
+            padding: 16px;
         }
-        
-        .container {
-            height: calc(100vh - 80px);
-            padding: 20px;
-        }
-        
+
         #plot {
             width: 100%;
             height: 100%;
-            border: 2px solid #00ffff;
-            border-radius: 8px;
-            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--hud-border);
+            border-radius: 14px;
+            background: rgba(0, 0, 0, 0.4);
+            box-shadow: inset 0 0 35px rgba(0, 255, 160, 0.08), 0 0 25px rgba(0, 255, 170, 0.15);
         }
-        
-        .legend-panel {
+
+        .hud-panel {
             position: absolute;
-            bottom: 30px;
-            right: 30px;
-            background: rgba(0, 0, 0, 0.85);
-            border: 1px solid #00ffff;
-            border-radius: 8px;
-            padding: 15px;
-            min-width: 250px;
+            background: var(--hud-bg);
+            border: 1px solid var(--hud-border);
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 255, 170, 0.15);
+            backdrop-filter: blur(4px);
         }
 
-        .metrics-panel {
-            position: absolute;
-            bottom: 30px;
-            left: 30px;
-            background: rgba(0, 0, 0, 0.85);
-            border: 1px solid #00ffff;
-            border-radius: 8px;
-            padding: 15px;
-            min-width: 280px;
-            font-size: 12px;
-            line-height: 1.6;
+        .hud-title {
+            font-size: 30px;
+            letter-spacing: 1px;
+            color: var(--neon-primary);
+            text-shadow: 0 0 12px rgba(0, 255, 140, 0.6);
+            margin-bottom: 4px;
         }
 
-        .metrics-panel h3 {
-            margin-bottom: 8px;
-            font-size: 14px;
-            border-bottom: 1px solid #00ffff;
-            padding-bottom: 5px;
-        }
-
-        .metrics-row {
+        .top-bar {
+            top: 24px;
+            left: 24px;
+            right: 24px;
+            padding: 12px 16px;
             display: flex;
             justify-content: space-between;
-            gap: 12px;
+            align-items: center;
+            z-index: 10;
         }
 
-        .metrics-value {
-            color: #00ffff;
-            font-weight: bold;
-        }
-        
-        .legend-panel h3 {
-            margin-bottom: 10px;
-            font-size: 14px;
-            border-bottom: 1px solid #00ffff;
-            padding-bottom: 5px;
-        }
-        
-        .legend-item {
+        .subtitle { font-size: 12px; color: rgba(140, 255, 220, 0.75); }
+
+        .status {
             display: flex;
+            gap: 14px;
             align-items: center;
-            gap: 10px;
-            margin: 8px 0;
+            font-size: 13px;
+        }
+
+        .pill {
+            border: 1px solid rgba(0, 255, 170, 0.45);
+            border-radius: 999px;
+            padding: 5px 10px;
+            background: rgba(0, 255, 120, 0.1);
+            color: #a8ffd7;
+        }
+
+        .indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+            background: #00ff7b;
+            box-shadow: 0 0 10px #00ff7b;
+            animation: pulse 1.6s infinite;
+        }
+
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.45;} }
+
+        .mapper {
+            top: 110px;
+            left: 24px;
+            width: 330px;
+            padding: 14px;
+            z-index: 9;
+        }
+
+        .mapper h3 {
+            color: #33ff9d;
+            border: 1px solid rgba(0, 255, 150, 0.45);
+            padding: 6px;
+            margin-bottom: 8px;
+            font-size: 30px;
+        }
+
+        .mapper .line { margin: 6px 0; font-size: 18px; color: #3be9b6; }
+        .mapper .line strong { color: #71ffef; }
+
+        .controls {
+            top: 110px;
+            right: 24px;
+            width: 320px;
+            padding: 14px;
+            z-index: 9;
             font-size: 12px;
         }
-        
-        .color-box {
-            width: 20px;
-            height: 20px;
-            border: 1px solid #fff;
+
+        .control-row { margin: 10px 0; }
+        .control-row label { display: flex; justify-content: space-between; margin-bottom: 5px; }
+
+        input[type="range"] { width: 100%; accent-color: #18ff9f; }
+
+        .btn {
+            border: 1px solid rgba(0,255,180,.45);
+            background: rgba(0, 255, 150, 0.12);
+            color: #9dffd9;
+            border-radius: 8px;
+            padding: 7px 10px;
+            cursor: pointer;
+            width: 100%;
+            transition: .2s ease;
+            font-family: inherit;
         }
-        
+
+        .btn:hover { background: rgba(0,255,150,.24); box-shadow: 0 0 12px rgba(0,255,150,.25); }
+
+        .metrics {
+            left: 24px;
+            right: 24px;
+            bottom: 24px;
+            padding: 10px;
+            z-index: 10;
+            display: grid;
+            grid-template-columns: repeat(6, minmax(120px, 1fr));
+            gap: 8px;
+        }
+
+        .metric-card {
+            background: rgba(0, 20, 14, 0.6);
+            border: 1px solid rgba(0,255,170,.25);
+            border-radius: 8px;
+            padding: 8px;
+            min-height: 64px;
+        }
+
+        .metric-card .label { font-size: 11px; color: rgba(160, 255, 220, 0.78); }
+        .metric-card .value { font-size: 15px; color: #5bffbf; margin-top: 6px; font-weight: bold; }
+
         .loading {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 24px;
             text-align: center;
+            font-size: 20px;
+            color: #8fffd4;
+            z-index: 12;
         }
-        
+
         .spinner {
-            border: 4px solid rgba(0, 255, 255, 0.1);
-            border-top: 4px solid #00ffff;
+            border: 4px solid rgba(0, 255, 180, 0.12);
+            border-top: 4px solid #00ffaa;
             border-radius: 50%;
-            width: 50px;
-            height: 50px;
+            width: 44px;
+            height: 44px;
+            margin: 0 auto 14px;
             animation: spin 1s linear infinite;
-            margin: 20px auto;
         }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+
+        @keyframes spin { from { transform: rotate(0deg);} to {transform: rotate(360deg);} }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>⚡ Vers3Dynamics Search</h1>
-        <div class="status">
-            <div class="status-item">
-                <div class="indicator"></div>
-                <span>ACTIVE</span>
+    <div class="app-shell">
+        <div id="plot"></div>
+
+        <div class="hud-panel top-bar">
+            <div>
+                <div class="hud-title">[ RF_SPACE_MAPPER ]</div>
+                <div class="subtitle">Real-time RF situational analysis and anomaly triage</div>
             </div>
-            <div class="status-item">
-                <span id="update-counter">Updates: 0</span>
-            </div>
-            <div class="status-item">
-                <span>Anomalies: <strong id="anomaly-counter">0</strong></span>
+            <div class="status">
+                <div class="pill"><span class="indicator"></span>TRACKING <strong id="anomaly-counter">0</strong> ANOMALIES</div>
+                <div class="pill" id="update-counter">Updates: 0</div>
+                <div class="pill" id="last-update-pill">Syncing...</div>
             </div>
         </div>
-    </div>
-    
-    <div class="container">
-        <div id="plot"></div>
+
+        <div class="hud-panel mapper">
+            <h3>[ RF_SPACE_MAPPER ]</h3>
+            <div class="line"><strong>A-</strong> 2.4 GHz Band</div>
+            <div class="line"><strong>B-</strong> 5.0 GHz Band</div>
+            <div class="line" style="color:#ff44d7;"><strong>C-</strong> 6.0 GHz Band</div>
+            <br>
+            <div class="line">[ CORE ] : AP Signal Strength</div>
+            <div class="line">[ SPHERE ] : Est. Coverage Volume</div>
+            <div class="line">[ BLUR ] : Positional Uncertainty</div>
+            <div class="line">[ ORIGIN ] : Local Receiver</div>
+        </div>
+
+        <div class="hud-panel controls">
+            <div class="control-row"><button id="toggle-stream" class="btn">Pause Stream</button></div>
+            <div class="control-row">
+                <label><span>Refresh Rate</span><strong id="refresh-value">500 ms</strong></label>
+                <input id="refresh-slider" type="range" min="200" max="1500" value="500" step="100">
+            </div>
+            <div class="control-row">
+                <label><span>Glow Intensity</span><strong id="glow-value">65%</strong></label>
+                <input id="glow-slider" type="range" min="20" max="100" value="65" step="5">
+            </div>
+            <div class="control-row"><button id="toggle-rotate" class="btn">Auto-Rotate: ON</button></div>
+            <div class="control-row"><button id="reset-camera" class="btn">Reset Camera</button></div>
+        </div>
+
+        <div class="hud-panel metrics">
+            <div class="metric-card"><div class="label">Avg Power</div><div id="avg-power" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Avg Stability</div><div id="avg-stability" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Strongest Band</div><div id="strongest-band" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Anomaly Ratio</div><div id="anomaly-ratio" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Pattern Balance</div><div id="pattern-counts" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Last Update</div><div id="last-update" class="value">-</div></div>
+        </div>
+
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <div>Initializing Spectral Analysis...</div>
-        </div>
-    </div>
-    
-    <div class="legend-panel">
-        <h3>LEGEND</h3>
-        <div class="legend-item">
-            <div class="color-box" style="background: cyan;"></div>
-            <span>Low Frequency (VHF/UHF)</span>
-        </div>
-        <div class="legend-item">
-            <div class="color-box" style="background: lime;"></div>
-            <span>Mid Frequency (L/S Band)</span>
-        </div>
-        <div class="legend-item">
-            <div class="color-box" style="background: magenta;"></div>
-            <span>High Frequency (C/X Band)</span>
-        </div>
-        <div class="legend-item">
-            <div class="color-box" style="background: red;"></div>
-            <span>⚠ ANOMALY DETECTED</span>
-        </div>
-        <div class="legend-item">
-            <div class="color-box" style="background: yellow;"></div>
-            <span>◆ Observer Platform</span>
+            Initializing spectral mesh...
         </div>
     </div>
 
-    <div class="metrics-panel">
-        <h3>LIVE METRICS</h3>
-        <div class="metrics-row"><span>Avg Power</span><span class="metrics-value" id="avg-power">-</span></div>
-        <div class="metrics-row"><span>Avg Stability</span><span class="metrics-value" id="avg-stability">-</span></div>
-        <div class="metrics-row"><span>Strongest Band</span><span class="metrics-value" id="strongest-band">-</span></div>
-        <div class="metrics-row"><span>Anomaly Ratio</span><span class="metrics-value" id="anomaly-ratio">-</span></div>
-        <div class="metrics-row"><span>Emerging/Fading</span><span class="metrics-value" id="pattern-counts">-</span></div>
-        <div class="metrics-row"><span>Last Update</span><span class="metrics-value" id="last-update">-</span></div>
-    </div>
-    
     <script>
         let updateCount = 0;
-        
+        let refreshMs = 500;
+        let pollingId = null;
+        let streamPaused = false;
+        let autoRotate = true;
+        let rotationStep = 0;
+        let glowIntensity = 0.65;
+
+        function startPolling() {
+            if (pollingId) clearInterval(pollingId);
+            pollingId = setInterval(() => {
+                if (!streamPaused) updateVisualization();
+            }, refreshMs);
+        }
+
+        function applyLayoutTweaks(layout) {
+            const opacity = Math.max(0.18, Math.min(0.95, glowIntensity));
+            const plotBg = `rgba(0, 8, 7, ${0.75 + opacity * 0.2})`;
+            layout.paper_bgcolor = plotBg;
+            layout.scene.bgcolor = `rgba(0, 8, 7, ${0.65 + opacity * 0.25})`;
+
+            if (autoRotate) {
+                rotationStep += 0.035;
+                layout.scene.camera = {
+                    eye: {
+                        x: 1.75 * Math.cos(rotationStep),
+                        y: 1.75 * Math.sin(rotationStep),
+                        z: 1.05 + 0.2 * Math.sin(rotationStep * 0.8)
+                    }
+                };
+            }
+        }
+
         function updateVisualization() {
             fetch('/api/spectrum')
                 .then(response => response.json())
@@ -766,42 +844,38 @@ HTML_TEMPLATE = """
                     const plotData = JSON.parse(data.plot);
                     const layout = plotData.layout;
                     const plotDiv = document.getElementById('plot');
-                    
-                    // Hide loading on first update
+
+                    applyLayoutTweaks(layout);
+
                     if (updateCount === 0) {
                         document.getElementById('loading').style.display = 'none';
-                    }
-                    
-                    // Update or create plot
-                    if (updateCount === 0) {
                         Plotly.newPlot(plotDiv, plotData.data, layout, {
                             responsive: true,
                             displayModeBar: true,
                             displaylogo: false
                         });
                     } else {
-                        Plotly.react(plotDiv, plotData.data, layout);
+                        Plotly.react(plotDiv, plotData.data, layout, { responsive: true, displaylogo: false });
                     }
-                    
+
                     updateCount++;
-                    document.getElementById('update-counter').textContent = 
-                        `Updates: ${updateCount}`;
+                    document.getElementById('update-counter').textContent = `Updates: ${updateCount}`;
 
                     if (data.summary) {
                         document.getElementById('avg-power').textContent = `${data.summary.average_power.toFixed(1)} dBm`;
                         document.getElementById('avg-stability').textContent = `${(data.summary.average_stability * 100).toFixed(1)}%`;
-                        document.getElementById('strongest-band').textContent = 
-                            `${(data.summary.strongest_frequency / 1e6).toFixed(1)} MHz @ ${data.summary.strongest_power.toFixed(1)} dBm`;
+                        document.getElementById('strongest-band').textContent = `${(data.summary.strongest_frequency / 1e6).toFixed(1)} MHz`;
                         document.getElementById('anomaly-ratio').textContent = `${(data.summary.anomaly_ratio * 100).toFixed(1)}%`;
                         if (data.summary.pattern_counts) {
                             const { emerging, fading } = data.summary.pattern_counts;
-                            document.getElementById('pattern-counts').textContent = `${emerging}/${fading}`;
+                            document.getElementById('pattern-counts').textContent = `${emerging} ↑ / ${fading} ↓`;
                         }
                     }
 
                     if (data.timestamp) {
                         const localTime = new Date(data.timestamp).toLocaleTimeString();
                         document.getElementById('last-update').textContent = localTime;
+                        document.getElementById('last-update-pill').textContent = `SYNC ${localTime}`;
                     }
 
                     document.getElementById('anomaly-counter').textContent = data.num_anomalies ?? 0;
@@ -809,16 +883,42 @@ HTML_TEMPLATE = """
                 .catch(error => {
                     console.error('Error updating visualization:', error);
                     document.getElementById('last-update').textContent = 'Connection issue';
+                    document.getElementById('last-update-pill').textContent = 'LINK DEGRADED';
                 });
         }
-        
-        // Initial update
+
+        document.getElementById('toggle-stream').addEventListener('click', (event) => {
+            streamPaused = !streamPaused;
+            event.target.textContent = streamPaused ? 'Resume Stream' : 'Pause Stream';
+            if (!streamPaused) updateVisualization();
+        });
+
+        document.getElementById('toggle-rotate').addEventListener('click', (event) => {
+            autoRotate = !autoRotate;
+            event.target.textContent = `Auto-Rotate: ${autoRotate ? 'ON' : 'OFF'}`;
+        });
+
+        document.getElementById('refresh-slider').addEventListener('input', (event) => {
+            refreshMs = Number(event.target.value);
+            document.getElementById('refresh-value').textContent = `${refreshMs} ms`;
+            startPolling();
+        });
+
+        document.getElementById('glow-slider').addEventListener('input', (event) => {
+            glowIntensity = Number(event.target.value) / 100;
+            document.getElementById('glow-value').textContent = `${event.target.value}%`;
+        });
+
+        document.getElementById('reset-camera').addEventListener('click', () => {
+            rotationStep = 0;
+            autoRotate = true;
+            document.getElementById('toggle-rotate').textContent = 'Auto-Rotate: ON';
+            updateVisualization();
+        });
+
         updateVisualization();
-        
-        // Auto-update every 500ms
-        setInterval(updateVisualization, 500);
-        
-        // Handle window resize
+        startPolling();
+
         window.addEventListener('resize', () => {
             Plotly.Plots.resize(document.getElementById('plot'));
         });
@@ -826,6 +926,7 @@ HTML_TEMPLATE = """
 </body>
 </html>
 """
+
 
 # Flask application
 app = Flask(__name__)
