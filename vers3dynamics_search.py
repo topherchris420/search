@@ -784,10 +784,11 @@ def index():
 def get_spectrum():
     """API endpoint for spectrum data"""
     try:
-        active_system = ensure_system_initialized()
+        if system is None:
+            return jsonify({'error': 'System not initialized'}), 503
 
-        spectral_state = active_system.processor.get_spectral_state()
-        plot_json = active_system.visualizer.create_3d_scene(spectral_state)
+        spectral_state = system.processor.get_spectral_state()
+        plot_json = system.visualizer.create_3d_scene(spectral_state)
         return jsonify({
             'plot': plot_json,
             'status': 'active',
@@ -802,8 +803,9 @@ def get_spectrum():
 @app.route('/api/status')
 def get_status():
     """Get system status"""
-    active_system = ensure_system_initialized()
-    return jsonify(active_system.get_status_snapshot())
+    if system is None:
+        return jsonify({'error': 'System not initialized'}), 503
+    return jsonify(system.get_status_snapshot())
 
 
 # =============================================================================
