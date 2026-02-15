@@ -84,6 +84,12 @@ Statistical Features (power, variance, stability)
    - Open your browser to `http://localhost:5000`
    - The 3D visualization will initialize automatically
 
+### Vercel Deployment
+
+Vercel expects a Flask entrypoint named `app.py` (or another supported entrypoint filename) that exposes a module-level `app` object. This repository now includes `app.py` for that purpose.
+
+If needed, set your Vercel build to use Python and deploy from the repository root.
+
 ---
 
 ## Configuration
