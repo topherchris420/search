@@ -18,6 +18,8 @@ Vers3Dynamics Search transforms invisible electromagnetic activity into an intui
 - **3D Visualization**: Interactive browser-based interface with spatial field representation
 - **Temporal Analysis**: Historical pattern tracking and stability metrics
 - **Situational Awareness**: Observer-centric perspective showing the surrounding EM environment
+- **Live Telemetry Panel**: Real-time rollups for average power, strongest active band, anomaly ratio, and update timestamp
+- **System Health API**: Extended `/api/status` telemetry including uptime and configured sample rate
 
 ---
 
@@ -341,3 +343,12 @@ This software is intended for authorized spectrum monitoring and research purpos
 ---
 
 **Vers3Dynamics Search** - *Illuminating the Invisible Spectrum*
+
+
+## Deployment (Vercel)
+
+This project now includes a dedicated Flask entrypoint file (`app.py`) so Vercel can auto-detect the application.
+
+- Vercel will discover `app.py` and the exported Flask object `app`
+- The RF system initialization is handled lazily/once via `ensure_system_initialized()` for API routes
+- No extra framework-specific bootstrap file is required
