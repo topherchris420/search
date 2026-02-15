@@ -766,6 +766,15 @@ app = Flask(__name__)
 CORS(app)
 system = None
 
+
+def ensure_system_initialized() -> Vers3DynamicsSearch:
+    """Lazily initialize the runtime system for WSGI/serverless environments."""
+    global system
+    if system is None:
+        system = Vers3DynamicsSearch()
+        system.start_acquisition()
+    return system
+
 @app.route('/')
 def index():
     """Serve main interface"""
@@ -775,11 +784,9 @@ def index():
 def get_spectrum():
     """API endpoint for spectrum data"""
     try:
-        if system is None:
-            return jsonify({'error': 'System not initialized'}), 503
-
-        spectral_state = system.processor.get_spectral_state()
-        plot_json = system.visualizer.create_3d_scene(spectral_state)
+        active_system = ensure_system_initialized()
+        spectral_state = active_system.processor.get_spectral_state()
+        plot_json = active_system.visualizer.create_3d_scene(spectral_state)
         return jsonify({
             'plot': plot_json,
             'status': 'active',
@@ -794,9 +801,8 @@ def get_spectrum():
 @app.route('/api/status')
 def get_status():
     """Get system status"""
-    if system is None:
-        return jsonify({'error': 'System not initialized'}), 503
-    return jsonify(system.get_status_snapshot())
+    active_system = ensure_system_initialized()
+    return jsonify(active_system.get_status_snapshot())
 
 
 # =============================================================================
@@ -814,15 +820,11 @@ def main():
     print("  Initializing electromagnetic environment monitoring...")
     print()
     
-    # Create system
-    system = Vers3DynamicsSearch()
-    
-    # Start acquisition
-    system.start_acquisition()
+    active_system = ensure_system_initialized()
     
     print(f"  ✓ Spectrum acquisition active")
-    print(f"  ✓ Monitoring {system.config.NUM_BANDS} frequency bands")
-    print(f"  ✓ Web interface starting on http://localhost:{system.config.PORT}")
+    print(f"  ✓ Monitoring {active_system.config.NUM_BANDS} frequency bands")
+    print(f"  ✓ Web interface starting on http://localhost:{active_system.config.PORT}")
     print()
     print("  Opening browser interface...")
     print("  Press Ctrl+C to stop")
@@ -831,10 +833,10 @@ def main():
     
     try:
         # Run Flask app
-        app.run(host='0.0.0.0', port=system.config.PORT, debug=False, threaded=True)
+        app.run(host='0.0.0.0', port=active_system.config.PORT, debug=False, threaded=True)
     except KeyboardInterrupt:
         print("\n\nShutting down...")
-        system.stop_acquisition()
+        active_system.stop_acquisition()
         print("Vers3Dynamics Search terminated.")
 
 if __name__ == '__main__':
