@@ -32,6 +32,14 @@ def test_search_success_and_cache(client, auth_headers):
     first_body = first.get_json()
     assert isinstance(first_body["results"], list)
     assert first_body["cache_hit"] is False
+    assert isinstance(first_body["facets"], dict)
+    assert set(first_body["facets"].keys()) == {
+        "category",
+        "source",
+        "security_tier",
+        "ontology_type",
+    }
+    assert isinstance(first_body["facet_pool_size"], int)
 
     second = client.post("/api/search", json=payload, headers=auth_headers)
     assert second.status_code == 200
@@ -58,6 +66,7 @@ def test_filters_and_pagination(client, auth_headers):
     assert body["page_size"] == 2
     assert body["total"] >= 1
     assert all(result["category"] == "policy" for result in body["results"])
+    assert all(item["value"] == "policy" for item in body["facets"]["category"])
 
 
 def test_invalid_payload(client, auth_headers):

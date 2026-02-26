@@ -138,6 +138,27 @@ class SemanticSearchEngine:
             return cleaned
         return f"{cleaned[: limit - 3]}..."
 
+    @staticmethod
+    def _build_facets(
+        ordered_pairs: list[tuple[dict[str, Any], float]],
+        pool_size: int = 200,
+    ) -> tuple[dict[str, list[dict[str, Any]]], int]:
+        facet_keys = ("category", "source", "security_tier", "ontology_type")
+        counts: dict[str, dict[str, int]] = {key: {} for key in facet_keys}
+        sampled = ordered_pairs[:pool_size]
+
+        for doc, _ in sampled:
+            for key in facet_keys:
+                value = str(doc.get(key, "unknown"))
+                counts[key][value] = counts[key].get(value, 0) + 1
+
+        facets: dict[str, list[dict[str, Any]]] = {}
+        for key in facet_keys:
+            values = sorted(counts[key].items(), key=lambda item: (-item[1], item[0]))
+            facets[key] = [{"value": value, "count": count} for value, count in values]
+
+        return facets, len(sampled)
+
     def available_filters(self) -> dict[str, list[str]]:
         with self._lock:
             docs = list(self._documents)
@@ -182,6 +203,13 @@ class SemanticSearchEngine:
                 "has_next": False,
                 "has_prev": page > 1,
                 "results": [],
+                "facets": {
+                    "category": [],
+                    "source": [],
+                    "security_tier": [],
+                    "ontology_type": [],
+                },
+                "facet_pool_size": 0,
                 "index_version": self._index_version,
             }
 
@@ -205,6 +233,8 @@ class SemanticSearchEngine:
                 key=lambda pair: pair[0].get("updated_at", ""),
                 reverse=True,
             )
+
+        facets, facet_pool_size = self._build_facets(ordered_pairs, pool_size=200)
 
         total = len(ordered_pairs)
         total_pages = int(np.ceil(total / page_size))
@@ -242,5 +272,7 @@ class SemanticSearchEngine:
             "has_next": page < total_pages,
             "has_prev": page > 1,
             "results": results,
+            "facets": facets,
+            "facet_pool_size": facet_pool_size,
             "index_version": self._index_version,
         }
