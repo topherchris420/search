@@ -1,4 +1,13 @@
-numpy>=1.24.0
-plotly>=5.18.0
 flask>=3.0.0
 flask-cors>=4.0.0
+numpy>=1.24.0
+redis>=5.0.0
+pytest>=8.0.0
+gunicorn>=21.2.0
+
+# Optional embedding providers:
+# sentence-transformers>=2.6.0
+# openai>=1.0.0
+
+# Optional ontology enrichment provider:
+# ontology-sdk>=0.1.0

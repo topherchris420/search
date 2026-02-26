@@ -1,0 +1,115 @@
+version: 1
+metadata:
+  name: semantic-ontology-search
+  owner: platform-search
+  environment: production
+  description: >
+    AIP Logic integration template for semantic search outputs, ontology mapping,
+    and downstream decision workflows.
+
+security:
+  zero_trust:
+    enabled: true
+    authn:
+      type: bearer
+      token_secret_ref: vault://search/prod/zero_trust_api_key
+    authz:
+      required_scopes:
+        - search.read
+        - ontology.write
+    network:
+      allowed_egress:
+        - https://search.internal/api/*
+        - https://ontology.internal/*
+      tls_required: true
+
+sources:
+  semantic_search_api:
+    type: rest
+    base_url: https://search.internal
+    timeout_ms: 4000
+    retries:
+      attempts: 3
+      backoff_ms: [150, 300, 600]
+
+ontology:
+  namespace: rainlab.rf
+  mappings:
+    - source_field: id
+      target_property: rainlab.rf.document_id
+    - source_field: ontology_id
+      target_property: rainlab.rf.entity_id
+    - source_field: ontology_type
+      target_property: rainlab.rf.entity_type
+    - source_field: category
+      target_property: rainlab.rf.category
+    - source_field: source
+      target_property: rainlab.rf.source
+    - source_field: security_tier
+      target_property: rainlab.rf.security_tier
+    - source_field: score
+      target_property: rainlab.rf.semantic_score
+
+pipelines:
+  - id: semantic-search-query
+    schedule: "on_demand"
+    inputs:
+      query: string
+      filters:
+        category: string
+        source: string
+        security_tier: string
+        ontology_type: string
+      page: int
+      page_size: int
+    steps:
+      - id: fetch_results
+        action: http.post
+        source: semantic_search_api
+        path: /api/search
+        body:
+          query: ${inputs.query}
+          filters: ${inputs.filters}
+          page: ${inputs.page}
+          page_size: ${inputs.page_size}
+      - id: validate_results
+        action: validate.schema
+        schema:
+          required: [results, total, page, page_size]
+      - id: upsert_ontology_entities
+        action: ontology.upsert
+        foreach: ${steps.fetch_results.response.results}
+        map:
+          entity_id: ${item.ontology_id}
+          entity_type: ${item.ontology_type}
+          attributes:
+            document_id: ${item.id}
+            title: ${item.title}
+            category: ${item.category}
+            source: ${item.source}
+            security_tier: ${item.security_tier}
+            semantic_score: ${item.score}
+            tags: ${item.tags}
+      - id: emit_decision_event
+        action: event.emit
+        when: ${steps.fetch_results.response.total > 0}
+        event_type: rainlab.semantic_search.completed
+        payload:
+          query: ${inputs.query}
+          total: ${steps.fetch_results.response.total}
+          index_version: ${steps.fetch_results.response.index_version}
+
+observability:
+  metrics:
+    - name: aip.semantic_search.latency_ms
+    - name: aip.semantic_search.result_count
+    - name: aip.semantic_search.ontology_upserts
+  logs:
+    redact_fields:
+      - security.credentials
+      - headers.Authorization
+  alerts:
+    - name: semantic_search_error_rate
+      condition: error_rate > 0.02
+      window: 5m
+      severity: high

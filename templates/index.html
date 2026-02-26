@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ app_name }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#e8f5ff',
+                            500: '#1775d1',
+                            700: '#0d4b88'
+                        }
+                    }
+                }
+            }
+        };
+    </script>
+</head>
+<body class="h-full bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div class="min-h-full">
+        <header class="border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/80">
+            <div class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 lg:px-8">
+                <div>
+                    <h1 class="text-xl font-semibold tracking-tight">{{ app_name }}</h1>
+                    <p class="text-sm text-slate-600 dark:text-slate-300">Semantic embeddings + cosine similarity + ontology-aware filters</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="theme-toggle" class="rounded-lg border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800">Toggle Theme</button>
+                    <button id="refresh-filters" class="rounded-lg border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800">Refresh Filters</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="mx-auto grid max-w-7xl gap-4 px-4 py-5 sm:px-6 lg:grid-cols-[320px_1fr] lg:px-8">
+            <aside class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-300">Search Controls</h2>
+
+                <form id="search-form" class="space-y-3">
+                    <div>
+                        <label for="query" class="mb-1 block text-sm font-medium">Query</label>
+                        <input id="query" type="text" placeholder="e.g. satellite interference anomaly" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950">
+                    </div>
+
+                    <div>
+                        <label for="category" class="mb-1 block text-sm font-medium">Category</label>
+                        <select id="category" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"></select>
+                    </div>
+
+                    <div>
+                        <label for="source" class="mb-1 block text-sm font-medium">Source</label>
+                        <select id="source" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"></select>
+                    </div>
+
+                    <div>
+                        <label for="security-tier" class="mb-1 block text-sm font-medium">Security Tier</label>
+                        <select id="security-tier" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"></select>
+                    </div>
+
+                    <div>
+                        <label for="ontology-type" class="mb-1 block text-sm font-medium">Ontology Type</label>
+                        <select id="ontology-type" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"></select>
+                    </div>
+
+                    <div>
+                        <label for="page-size" class="mb-1 block text-sm font-medium">Page Size</label>
+                        <select id="page-size" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">
+                            <option value="5">5</option>
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="api-key" class="mb-1 block text-sm font-medium">API Key / Bearer Token</label>
+                        <input id="api-key" type="password" autocomplete="off" placeholder="Required when zero-trust is enabled" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="submit" class="rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700">Search</button>
+                        <button id="reset-btn" type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800">Reset</button>
+                    </div>
+                </form>
+            </aside>
+
+            <section class="space-y-4">
+                <div id="error-banner" class="hidden rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200"></div>
+
+                <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <p id="result-meta" class="text-sm text-slate-600 dark:text-slate-300">Ready.</p>
+                        <p id="cache-meta" class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400"></p>
+                    </div>
+                    <div id="loading" class="hidden rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">Searching with retry policy...</div>
+                    <div id="results" class="space-y-3"></div>
+                </div>
+
+                <div class="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    <button id="prev-page" class="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-slate-700">Previous</button>
+                    <p id="page-indicator" class="text-sm text-slate-600 dark:text-slate-300">Page 1</p>
+                    <button id="next-page" class="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-slate-700">Next</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        window.APP_CONFIG = {
+            zeroTrustEnabled: {{ 'true' if zero_trust_enabled else 'false' }},
+            defaultPageSize: {{ default_page_size }}
+        };
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

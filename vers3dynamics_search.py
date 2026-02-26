@@ -11,12 +11,12 @@ License: MIT
 
 import numpy as np
 import plotly.graph_objects as go
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 from flask_cors import CORS
 from threading import Thread, Lock
 import time
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime, timezone
 import logging
 import os
@@ -324,8 +324,15 @@ class RFProcessor:
                     'frequency_mhz': round(node.frequency / 1e6, 2),
                     'severity': severity,
                     'confidence': confidence,
-                    'score_sigma': round(node.anomaly_score, 2)
+                    'score_sigma': round(float(node.anomaly_score), 2),
+                    'power_dbm': round(float(node.power), 2),
+                    'baseline_dbm': round(float(node.baseline), 2),
+                    'stability': round(float(node.stability), 4),
+                    'pattern': node.pattern,
+                    'trend': round(float(node.trend), 4),
+                    'position': [float(node.position[0]), float(node.position[1]), float(node.position[2])]
                 })
+            anomaly_details.sort(key=lambda item: item['score_sigma'], reverse=True)
 
             data_age_seconds = None
             stale = True
@@ -356,6 +363,230 @@ class RFProcessor:
                     'acquisition_source': 'Synthetic RF generator' if self.config.SIMULATE_SDR else 'Software-defined radio'
                 }
             }
+
+
+# =============================================================================
+# ONTOLOGY ENRICHMENT
+# =============================================================================
+
+class OntologySDKBridge:
+    """Optional Ontology SDK adapter for deep-dive anomaly enrichment."""
+
+    def __init__(self):
+        self.enabled = os.getenv("ONTOLOGY_SDK_ENABLED", "true").lower() not in {"0", "false", "off", "no"}
+        self.client = None
+        self.mode = "disabled" if not self.enabled else "fallback"
+        self.last_error: Optional[str] = None
+        self._initialize_client()
+
+    def _initialize_client(self):
+        if not self.enabled:
+            logger.info("Ontology SDK integration disabled via ONTOLOGY_SDK_ENABLED")
+            return
+
+        try:
+            import ontology_sdk  # type: ignore
+        except Exception as exc:
+            self.last_error = str(exc)
+            logger.warning("Ontology SDK import failed, using heuristic deep-dive metrics: %s", exc)
+            return
+
+        candidate_classes = []
+        if hasattr(ontology_sdk, "Client"):
+            candidate_classes.append(ontology_sdk.Client)
+        if hasattr(ontology_sdk, "OntologyClient"):
+            candidate_classes.append(ontology_sdk.OntologyClient)
+
+        for candidate in candidate_classes:
+            try:
+                if hasattr(candidate, "from_env"):
+                    self.client = candidate.from_env()
+                else:
+                    self.client = candidate()
+                self.mode = "sdk"
+                logger.info("Ontology SDK client initialized via %s", candidate.__name__)
+                return
+            except Exception as exc:
+                self.last_error = str(exc)
+
+        module_client = getattr(ontology_sdk, "client", None)
+        if module_client is not None:
+            self.client = module_client
+            self.mode = "sdk"
+            logger.info("Ontology SDK client initialized via ontology_sdk.client")
+            return
+
+        logger.warning("Ontology SDK loaded but no supported client entrypoint found; using fallback metrics")
+
+    @staticmethod
+    def _severity_weight(severity: str) -> float:
+        return {"high": 1.0, "medium": 0.7, "low": 0.4}.get(severity, 0.4)
+
+    @staticmethod
+    def _confidence_weight(confidence: str) -> float:
+        return {"high": 0.92, "medium": 0.74, "low": 0.56}.get(confidence, 0.56)
+
+    def _fallback_metrics(self, anomaly: Dict[str, Any], summary: Dict[str, Any]) -> Dict[str, Any]:
+        score_sigma = float(anomaly.get("score_sigma", 0.0))
+        severity = str(anomaly.get("severity", "low"))
+        confidence = str(anomaly.get("confidence", "low"))
+        stability = float(anomaly.get("stability", 1.0))
+        anomaly_ratio = float(summary.get("anomaly_ratio", 0.0))
+        trend = abs(float(anomaly.get("trend", 0.0)))
+        freq_mhz = float(anomaly.get("frequency_mhz", 0.0))
+
+        risk_score = min(
+            100.0,
+            score_sigma * 14.0
+            + self._severity_weight(severity) * 22.0
+            + anomaly_ratio * 55.0
+            + trend * 18.0
+            + (1.0 - min(1.0, max(0.0, stability))) * 12.0,
+        )
+        confidence_value = min(
+            0.99,
+            max(0.25, self._confidence_weight(confidence) - max(0.0, stability - 0.65) * 0.2),
+        )
+
+        if severity == "high":
+            mission_impact = "Potential mission-critical interference in active RF corridor."
+            recommended_action = "Lock center focus, isolate source, and notify mission operator."
+        elif severity == "medium":
+            mission_impact = "Elevated spectrum contention with moderate operational risk."
+            recommended_action = "Track drift over next 30 seconds and adjust channel allocation."
+        else:
+            mission_impact = "Early anomaly signature observed with low immediate disruption."
+            recommended_action = "Keep passive watch and trigger alert if anomaly score increases."
+
+        entities = [
+            {
+                "name": f"Band-{int(freq_mhz)}MHz",
+                "type": "frequency_band",
+                "correlation": round(min(0.99, 0.45 + score_sigma / 12.0), 2),
+            },
+            {
+                "name": "Mission RF Corridor",
+                "type": "operational_zone",
+                "correlation": round(min(0.99, 0.35 + anomaly_ratio), 2),
+            },
+            {
+                "name": f"Pattern-{str(anomaly.get('pattern', 'stable')).upper()}",
+                "type": "behavior",
+                "correlation": round(min(0.99, 0.4 + trend * 2.5), 2),
+            },
+        ]
+
+        return {
+            "risk_score": round(risk_score, 1),
+            "confidence": round(confidence_value, 2),
+            "mission_impact": mission_impact,
+            "recommended_action": recommended_action,
+            "related_entities": entities,
+            "source": "heuristic",
+            "sdk_mode": self.mode,
+        }
+
+    def _invoke_sdk(self, payload: Dict[str, Any]) -> Optional[Any]:
+        if self.client is None:
+            return None
+
+        method_names = (
+            "deep_dive_metrics",
+            "get_deep_dive_metrics",
+            "analyze_anomaly",
+            "enrich_anomaly",
+            "analyze_signal",
+        )
+        for method_name in method_names:
+            method = getattr(self.client, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                return method(payload)
+            except TypeError:
+                try:
+                    return method(payload.get("anomaly"))
+                except Exception as exc:
+                    self.last_error = str(exc)
+            except Exception as exc:
+                self.last_error = str(exc)
+        return None
+
+    @staticmethod
+    def _normalize_entities(raw_entities: Any, fallback_entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(raw_entities, list):
+            return fallback_entities
+
+        entities = []
+        for item in raw_entities[:6]:
+            if isinstance(item, dict):
+                name = str(item.get("name", "unknown"))
+                entity_type = str(item.get("type", "entity"))
+                correlation = item.get("correlation", 0.5)
+                try:
+                    correlation = float(correlation)
+                except (TypeError, ValueError):
+                    correlation = 0.5
+                entities.append(
+                    {
+                        "name": name,
+                        "type": entity_type,
+                        "correlation": round(min(0.99, max(0.0, correlation)), 2),
+                    }
+                )
+            else:
+                entities.append({"name": str(item), "type": "entity", "correlation": 0.5})
+        return entities or fallback_entities
+
+    def _normalize_sdk_metrics(self, raw: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            return fallback
+
+        merged = dict(fallback)
+
+        if "risk_score" in raw:
+            try:
+                merged["risk_score"] = round(min(100.0, max(0.0, float(raw["risk_score"]))), 1)
+            except (TypeError, ValueError):
+                pass
+        if "confidence" in raw:
+            try:
+                merged["confidence"] = round(min(0.99, max(0.0, float(raw["confidence"]))), 2)
+            except (TypeError, ValueError):
+                pass
+
+        impact = raw.get("mission_impact")
+        if impact:
+            merged["mission_impact"] = str(impact)
+
+        action = raw.get("recommended_action")
+        if action:
+            merged["recommended_action"] = str(action)
+
+        merged["related_entities"] = self._normalize_entities(
+            raw.get("related_entities"),
+            merged.get("related_entities", []),
+        )
+        return merged
+
+    def get_deep_dive_metrics(self, anomaly: Dict[str, Any], summary: Dict[str, Any]) -> Dict[str, Any]:
+        fallback = self._fallback_metrics(anomaly, summary)
+        if self.mode != "sdk":
+            return fallback
+
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "anomaly": anomaly,
+            "summary": summary,
+        }
+        raw = self._invoke_sdk(payload)
+        if raw is None:
+            return fallback
+
+        normalized = self._normalize_sdk_metrics(raw, fallback)
+        normalized["source"] = "ontology_sdk"
+        normalized["sdk_mode"] = self.mode
+        return normalized
 
 
 # =============================================================================
@@ -561,6 +792,7 @@ class Vers3DynamicsSearch:
         self.processor = RFProcessor(self.config)
         self.source = SpectrumSource(self.config)
         self.visualizer = Visualizer(self.config)
+        self.ontology_bridge = OntologySDKBridge()
         self.running = False
         self.acquisition_thread = None
         self.started_at = None
@@ -613,6 +845,37 @@ class Vers3DynamicsSearch:
         """Get current visualization data as JSON"""
         spectral_state = self.processor.get_spectral_state()
         return self.visualizer.create_3d_scene(spectral_state)
+
+    def get_deep_dive_snapshot(self, frequency_mhz: Optional[float] = None) -> Dict[str, Any]:
+        """Return ontology-enriched deep-dive metrics for a selected anomaly."""
+        spectral_state = self.processor.get_spectral_state()
+        anomaly_details = spectral_state.get("anomaly_details", [])
+        summary = spectral_state.get("summary", {})
+
+        if not anomaly_details:
+            return {
+                "active": False,
+                "reason": "No active anomalies",
+                "timestamp": spectral_state.get("timestamp"),
+                "ontology_mode": self.ontology_bridge.mode,
+            }
+
+        selected_anomaly = anomaly_details[0]
+        if frequency_mhz is not None:
+            selected_anomaly = min(
+                anomaly_details,
+                key=lambda anomaly: abs(float(anomaly.get("frequency_mhz", 0.0)) - frequency_mhz),
+            )
+
+        metrics = self.ontology_bridge.get_deep_dive_metrics(selected_anomaly, summary)
+
+        return {
+            "active": True,
+            "timestamp": spectral_state.get("timestamp"),
+            "ontology_mode": self.ontology_bridge.mode,
+            "anomaly": selected_anomaly,
+            "metrics": metrics,
+        }
 
     def get_status_snapshot(self) -> Dict:
         """Return current runtime status metrics for the API/UI."""
@@ -830,6 +1093,130 @@ HTML_TEMPLATE = """
             z-index: 8;
         }
 
+        .deep-dive-overlay {
+            top: 50%;
+            left: 50%;
+            width: min(660px, calc(100vw - 64px));
+            transform: translate(-50%, -50%) scale(0.78);
+            opacity: 0;
+            pointer-events: none;
+            padding: 14px;
+            z-index: 11;
+            border-color: rgba(99, 208, 255, 0.5);
+            box-shadow: 0 18px 52px rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(6px);
+            transition: opacity 280ms ease, transform 360ms ease;
+        }
+
+        .deep-dive-overlay.active {
+            opacity: 1;
+            transform: translate(-50%, -50%) scale(1);
+            animation: centerPulse 1.8s ease-out;
+        }
+
+        .deep-dive-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .deep-dive-title {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+
+        .deep-dive-subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 3px;
+        }
+
+        .deep-dive-badge {
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: var(--accent-cyan);
+            background: rgba(17, 26, 42, 0.92);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+
+        .deep-dive-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(110px, 1fr));
+            gap: 8px;
+        }
+
+        .deep-dive-cell {
+            background: #111b2b;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px;
+            min-height: 68px;
+        }
+
+        .deep-dive-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .deep-dive-value {
+            font-size: 15px;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .deep-dive-narrative {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .deep-dive-narrative strong {
+            color: var(--text-primary);
+        }
+
+        .deep-entity-list {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .deep-entity {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px;
+            background: #0f1827;
+            min-height: 58px;
+        }
+
+        .deep-entity-name {
+            font-size: 12px;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .deep-entity-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 3px;
+        }
+
+        @keyframes centerPulse {
+            0% { box-shadow: 0 0 0 rgba(99, 208, 255, 0.0); }
+            38% { box-shadow: 0 0 32px rgba(99, 208, 255, 0.28); }
+            100% { box-shadow: 0 18px 52px rgba(0, 0, 0, 0.45); }
+        }
+
         .loading {
             position: absolute;
             top: 50%;
@@ -840,6 +1227,59 @@ HTML_TEMPLATE = """
             color: var(--text-primary);
             z-index: 12;
         }
+
+        @media (max-width: 1100px) {
+            .mapper,
+            .controls,
+            .event-log {
+                width: min(320px, calc(100vw - 48px));
+            }
+
+            .metrics {
+                grid-template-columns: repeat(3, minmax(120px, 1fr));
+            }
+
+            .deep-dive-grid {
+                grid-template-columns: repeat(2, minmax(120px, 1fr));
+            }
+
+            .deep-entity-list {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 760px) {
+            .app-shell {
+                padding: 8px;
+            }
+
+            .top-bar,
+            .metrics {
+                left: 8px;
+                right: 8px;
+            }
+
+            .mapper,
+            .controls,
+            .event-log {
+                display: none;
+            }
+
+            .metrics {
+                bottom: 14px;
+                grid-template-columns: repeat(2, minmax(110px, 1fr));
+            }
+
+            .deep-dive-overlay {
+                width: calc(100vw - 22px);
+                padding: 10px;
+            }
+
+            .deep-dive-grid,
+            .deep-entity-list {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -847,6 +1287,24 @@ HTML_TEMPLATE = """
     <div class="app-shell">
         <div id="plot"></div>
         <div id="simulation-watermark" class="simulation-watermark">SIMULATION MODE</div>
+        <div id="deep-dive-panel" class="hud-panel deep-dive-overlay" aria-live="polite">
+            <div class="deep-dive-header">
+                <div>
+                    <div class="deep-dive-title">Ontology Deep-Dive Metrics</div>
+                    <div class="deep-dive-subtitle">Centered anomaly context and operational guidance</div>
+                </div>
+                <div class="deep-dive-badge" id="deep-sdk-mode">SDK MODE: FALLBACK</div>
+            </div>
+            <div class="deep-dive-grid">
+                <div class="deep-dive-cell"><div class="deep-dive-label">Frequency</div><div class="deep-dive-value" id="deep-frequency">-</div></div>
+                <div class="deep-dive-cell"><div class="deep-dive-label">Severity / Sigma</div><div class="deep-dive-value" id="deep-severity">-</div></div>
+                <div class="deep-dive-cell"><div class="deep-dive-label">Risk Score</div><div class="deep-dive-value" id="deep-risk">-</div></div>
+                <div class="deep-dive-cell"><div class="deep-dive-label">Confidence</div><div class="deep-dive-value" id="deep-confidence">-</div></div>
+            </div>
+            <div class="deep-dive-narrative"><strong>Impact:</strong> <span id="deep-impact">No active anomaly selected.</span></div>
+            <div class="deep-dive-narrative"><strong>Action:</strong> <span id="deep-action">Await anomaly trigger.</span></div>
+            <div class="deep-entity-list" id="deep-entities"></div>
+        </div>
 
         <div class="hud-panel top-bar">
             <div>
@@ -917,7 +1375,20 @@ HTML_TEMPLATE = """
         let rotationStep = 0;
         let displayContrast = 0.65;
         let reducedMotion = false;
+        let stalePreviously = false;
+        let lastAnomalyEventKey = '';
+        let lastDeepDiveKey = '';
         const maxEvents = 20;
+        const centerFocus = {
+            active: false,
+            untilEpochMs: 0,
+            position: [0, 0, 0]
+        };
+
+        function asNumber(value, fallback = 0) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
+        }
 
         function recordEvent(type, details) {
             const list = document.getElementById('event-log-list');
@@ -930,13 +1401,78 @@ HTML_TEMPLATE = """
 
         function startPolling() {
             if (pollingId) clearInterval(pollingId);
-            pollingId = setInterval(() => { if (!streamPaused) updateVisualization(); }, refreshMs);
+            pollingId = setInterval(() => {
+                if (!streamPaused) updateVisualization();
+            }, refreshMs);
+        }
+
+        function hideDeepDivePanel() {
+            document.getElementById('deep-dive-panel').classList.remove('active');
+            centerFocus.active = false;
+        }
+
+        function renderEntityCards(entities) {
+            const container = document.getElementById('deep-entities');
+            container.innerHTML = '';
+            if (!entities.length) {
+                const card = document.createElement('div');
+                card.className = 'deep-entity';
+                card.innerHTML = '<div class="deep-entity-name">No linked entities</div><div class="deep-entity-meta">Awaiting ontology correlation</div>';
+                container.appendChild(card);
+                return;
+            }
+
+            entities.slice(0, 6).forEach((entity) => {
+                const card = document.createElement('div');
+                card.className = 'deep-entity';
+                const correlation = asNumber(entity.correlation, 0);
+                card.innerHTML = `<div class="deep-entity-name">${entity.name || 'unknown'}</div><div class="deep-entity-meta">${entity.type || 'entity'} | corr ${(correlation * 100).toFixed(0)}%</div>`;
+                container.appendChild(card);
+            });
+        }
+
+        function setCenterFocus(position) {
+            if (!Array.isArray(position) || position.length !== 3) return;
+            centerFocus.active = true;
+            centerFocus.position = [
+                asNumber(position[0], 0),
+                asNumber(position[1], 0),
+                asNumber(position[2], 0)
+            ];
+            centerFocus.untilEpochMs = Date.now() + 4200;
         }
 
         function applyLayoutTweaks(layout) {
             const tone = Math.max(0.3, Math.min(1.0, displayContrast));
+            if (!layout.scene) layout.scene = {};
             layout.paper_bgcolor = `rgba(13, 20, 32, ${0.78 + tone * 0.18})`;
             layout.scene.bgcolor = `rgba(17, 26, 42, ${0.72 + tone * 0.2})`;
+
+            if (centerFocus.active && Date.now() > centerFocus.untilEpochMs) {
+                centerFocus.active = false;
+            }
+
+            if (centerFocus.active && !reducedMotion) {
+                const [tx, ty, tz] = centerFocus.position;
+                const magnitude = Math.max(1.0, Math.hypot(tx, ty, tz));
+                const nx = tx / magnitude;
+                const ny = ty / magnitude;
+                const nz = tz / magnitude;
+
+                layout.scene.camera = {
+                    center: {
+                        x: nx * 0.36,
+                        y: ny * 0.36,
+                        z: nz * 0.22
+                    },
+                    eye: {
+                        x: nx * 1.35 + 0.55,
+                        y: ny * 1.35 + 0.55,
+                        z: 1.12 + nz * 0.45
+                    }
+                };
+                return;
+            }
 
             if (autoRotate && !reducedMotion) {
                 rotationStep += 0.025;
@@ -951,8 +1487,47 @@ HTML_TEMPLATE = """
         }
 
         function toUtcLabel(isoString) {
-            const date = new Date(isoString);
-            return `${date.toISOString().replace('T', ' ').replace('Z', ' UTC')}`;
+            try {
+                const date = new Date(isoString);
+                return `${date.toISOString().replace('T', ' ').replace('Z', ' UTC')}`;
+            } catch (error) {
+                return 'Invalid timestamp';
+            }
+        }
+
+        function requestDeepDive(anomalyDetail) {
+            const detailKey = `${anomalyDetail.frequency_mhz}|${anomalyDetail.score_sigma}|${anomalyDetail.severity}`;
+            if (detailKey === lastDeepDiveKey) return;
+            lastDeepDiveKey = detailKey;
+
+            fetch(`/api/deep-dive?frequency_mhz=${encodeURIComponent(anomalyDetail.frequency_mhz)}`)
+                .then((response) => response.json())
+                .then((payload) => {
+                    if (!payload.active || !payload.anomaly || !payload.metrics) {
+                        hideDeepDivePanel();
+                        return;
+                    }
+
+                    const anomaly = payload.anomaly;
+                    const metrics = payload.metrics;
+                    document.getElementById('deep-frequency').textContent = `${asNumber(anomaly.frequency_mhz).toFixed(2)} MHz`;
+                    document.getElementById('deep-severity').textContent = `${String(anomaly.severity || 'low').toUpperCase()} / ${asNumber(anomaly.score_sigma).toFixed(2)} sigma`;
+                    document.getElementById('deep-risk').textContent = `${asNumber(metrics.risk_score).toFixed(1)} / 100`;
+                    document.getElementById('deep-confidence').textContent = `${(asNumber(metrics.confidence) * 100).toFixed(0)}%`;
+                    document.getElementById('deep-impact').textContent = metrics.mission_impact || 'No mission impact provided.';
+                    document.getElementById('deep-action').textContent = metrics.recommended_action || 'No action recommendation provided.';
+
+                    const sdkMode = String(metrics.sdk_mode || payload.ontology_mode || 'fallback').toUpperCase();
+                    const sdkSource = String(metrics.source || 'heuristic').toUpperCase();
+                    document.getElementById('deep-sdk-mode').textContent = `SDK MODE: ${sdkMode} (${sdkSource})`;
+
+                    renderEntityCards(Array.isArray(metrics.related_entities) ? metrics.related_entities : []);
+                    document.getElementById('deep-dive-panel').classList.add('active');
+                    setCenterFocus(anomaly.position);
+                })
+                .catch((error) => {
+                    console.error('Error loading deep-dive metrics:', error);
+                });
         }
 
         function updateVisualization() {
@@ -978,17 +1553,17 @@ HTML_TEMPLATE = """
                     document.getElementById('link-health-pill').className = 'pill good';
 
                     if (data.summary) {
-                        document.getElementById('avg-power').textContent = `${data.summary.average_power.toFixed(1)} dBm`;
-                        document.getElementById('avg-stability').textContent = `${(data.summary.average_stability * 100).toFixed(1)}%`;
-                        document.getElementById('strongest-band').textContent = `${(data.summary.strongest_frequency / 1e6).toFixed(1)} MHz`;
-                        document.getElementById('anomaly-ratio').textContent = `${(data.summary.anomaly_ratio * 100).toFixed(1)}%`;
+                        document.getElementById('avg-power').textContent = `${asNumber(data.summary.average_power).toFixed(1)} dBm`;
+                        document.getElementById('avg-stability').textContent = `${(asNumber(data.summary.average_stability) * 100).toFixed(1)}%`;
+                        document.getElementById('strongest-band').textContent = `${(asNumber(data.summary.strongest_frequency) / 1e6).toFixed(1)} MHz`;
+                        document.getElementById('anomaly-ratio').textContent = `${(asNumber(data.summary.anomaly_ratio) * 100).toFixed(1)}%`;
                         if (data.summary.pattern_counts) {
                             const { emerging, fading } = data.summary.pattern_counts;
-                            document.getElementById('pattern-counts').textContent = `${emerging} ↑ / ${fading} ↓`;
+                            document.getElementById('pattern-counts').textContent = `${asNumber(emerging)} UP / ${asNumber(fading)} DOWN`;
                         }
                         if (data.summary.severity_counts) {
                             const { high, medium, low } = data.summary.severity_counts;
-                            document.getElementById('anomaly-counter').textContent = `ANOMALIES H/M/L: ${high}/${medium}/${low}`;
+                            document.getElementById('anomaly-counter').textContent = `ANOMALIES H/M/L: ${asNumber(high)}/${asNumber(medium)}/${asNumber(low)}`;
                         }
                     }
 
@@ -1006,10 +1581,13 @@ HTML_TEMPLATE = """
                     document.getElementById('stale-warning').textContent = stale ? 'YES' : 'NO';
                     if (stale) {
                         document.getElementById('data-age-pill').className = 'pill attention';
-                        recordEvent('connection degradation', 'No new sample within stale-data threshold.');
+                        if (!stalePreviously) {
+                            recordEvent('connection degradation', 'No new sample within stale-data threshold.');
+                        }
                     } else {
                         document.getElementById('data-age-pill').className = 'pill';
                     }
+                    stalePreviously = stale;
 
                     if (data.provenance) {
                         document.getElementById('sensor-id').textContent = data.provenance.sensor_id;
@@ -1023,7 +1601,19 @@ HTML_TEMPLATE = """
 
                     if (Array.isArray(data.anomaly_details) && data.anomaly_details.length) {
                         const highest = data.anomaly_details[0];
-                        recordEvent('anomaly detected', `${highest.frequency_mhz} MHz, severity ${highest.severity}, confidence ${highest.confidence}`);
+                        const anomalyKey = `${highest.frequency_mhz}|${highest.score_sigma}|${highest.severity}|${highest.confidence}`;
+                        if (anomalyKey !== lastAnomalyEventKey) {
+                            recordEvent('anomaly detected', `${highest.frequency_mhz} MHz, severity ${highest.severity}, confidence ${highest.confidence}`);
+                        }
+                        lastAnomalyEventKey = anomalyKey;
+                        requestDeepDive(highest);
+                    } else {
+                        if (lastAnomalyEventKey) {
+                            recordEvent('anomaly clear', 'No anomaly remains above threshold.');
+                        }
+                        lastAnomalyEventKey = '';
+                        lastDeepDiveKey = '';
+                        hideDeepDivePanel();
                     }
                 })
                 .catch(error => {
@@ -1063,6 +1653,7 @@ HTML_TEMPLATE = """
 
         document.getElementById('reset-camera').addEventListener('click', () => {
             rotationStep = 0;
+            centerFocus.active = false;
             autoRotate = true;
             const btn = document.getElementById('toggle-rotate');
             btn.textContent = 'Auto-Rotate: ON';
@@ -1141,6 +1732,23 @@ def get_spectrum():
         logger.error(f"API error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/deep-dive')
+def get_deep_dive():
+    """API endpoint for ontology-enriched anomaly deep-dive metrics."""
+    try:
+        active_system = ensure_system_initialized()
+        frequency_param = request.args.get("frequency_mhz")
+        frequency_mhz = None
+        if frequency_param is not None:
+            frequency_mhz = float(frequency_param)
+
+        return jsonify(active_system.get_deep_dive_snapshot(frequency_mhz=frequency_mhz))
+    except ValueError:
+        return jsonify({"error": "frequency_mhz must be numeric"}), 400
+    except Exception as e:
+        logger.error(f"Deep-dive API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/status')
 def get_status():
     """Get system status"""
@@ -1190,3 +1798,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
