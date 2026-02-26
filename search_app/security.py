@@ -114,7 +114,9 @@ def secure_endpoint(settings: Settings, rate_limiter: RateLimiter) -> Callable:
             if settings.zero_trust_enabled:
                 token = extract_token(request)
                 if not token or not hmac.compare_digest(token, settings.api_key):
-                    raise UnauthorizedError("Invalid API credential")
+                    raise UnauthorizedError(
+                        "Invalid API credential. Use the ZERO_TRUST_API_KEY value in the API key field."
+                    )
 
             return func(*args, **kwargs)
 
