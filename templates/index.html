@@ -43,11 +43,18 @@
             backdrop-filter: blur(12px);
             background: linear-gradient(150deg, rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.6));
         }
+
+        .hud-chip {
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            background: rgba(15, 23, 42, 0.52);
+            backdrop-filter: blur(6px);
+        }
     </style>
 </head>
 <body class="h-full overflow-x-hidden bg-slate-950 text-slate-100">
+    <canvas id="action-canvas" class="pointer-events-none fixed inset-0 -z-20 h-full w-full"></canvas>
     <div class="pointer-events-none fixed inset-0 -z-10">
-        <div class="absolute inset-0 bg-[radial-gradient(circle_at_12%_18%,rgba(34,211,238,0.18),transparent_42%),radial-gradient(circle_at_88%_8%,rgba(251,146,60,0.14),transparent_38%),radial-gradient(circle_at_50%_110%,rgba(16,185,129,0.14),transparent_42%),linear-gradient(160deg,#020617_0%,#0b1222_52%,#111827_100%)]"></div>
+        <div class="absolute inset-0 bg-[radial-gradient(circle_at_12%_18%,rgba(34,211,238,0.14),transparent_42%),radial-gradient(circle_at_88%_8%,rgba(251,146,60,0.12),transparent_38%),radial-gradient(circle_at_50%_110%,rgba(16,185,129,0.1),transparent_42%),linear-gradient(160deg,rgba(2,6,23,0.82)_0%,rgba(11,18,34,0.72)_52%,rgba(17,24,39,0.82)_100%)]"></div>
     </div>
 
     <div class="min-h-full">
@@ -58,6 +65,7 @@
                     <p class="text-sm text-slate-300">Embeddings + cosine similarity + ontology filters + zero-trust APIs</p>
                 </div>
                 <div class="flex items-center gap-2">
+                    <span id="scene-status" class="hud-chip rounded-full px-3 py-2 text-xs font-bold tracking-[0.15em] text-cyan-100">SCENE: IDLE</span>
                     <button id="theme-toggle" class="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm font-medium hover:bg-white/10">Toggle Theme</button>
                     <button id="refresh-filters" class="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm font-medium hover:bg-white/10">Refresh Filters</button>
                 </div>
@@ -118,7 +126,7 @@
             </aside>
 
             <section class="space-y-4">
-                <div class="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
+                <div class="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
                     <div class="glass rounded-xl border border-white/10 p-3">
                         <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">Total Matches</p>
                         <p id="stat-total" class="mt-1 text-xl font-black text-cyan-200">0</p>
@@ -135,7 +143,11 @@
                         <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">Retries</p>
                         <p id="stat-retry" class="mt-1 text-xl font-black text-cyan-200">0</p>
                     </div>
-                    <div class="glass rounded-xl border border-white/10 p-3 col-span-2 md:col-span-1">
+                    <div class="glass rounded-xl border border-white/10 p-3">
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">Action Energy</p>
+                        <p id="stat-energy" class="mt-1 text-xl font-black text-cyan-200">35%</p>
+                    </div>
+                    <div class="glass rounded-xl border border-white/10 p-3 col-span-2 md:col-span-1 xl:col-span-1">
                         <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">Index Version</p>
                         <p id="stat-index" class="mt-1 truncate text-sm font-bold text-cyan-100">--</p>
                     </div>

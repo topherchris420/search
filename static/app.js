@@ -4,6 +4,10 @@
   const VIRTUAL_ITEM_HEIGHT = 244;
   const VIRTUAL_OVERSCAN = 4;
 
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
   function emptyFacetState() {
     return {
       category: [],
@@ -11,6 +15,262 @@
       security_tier: [],
       ontology_type: [],
     };
+  }
+
+  class ActionScene {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas?.getContext("2d", { alpha: true }) || null;
+      this.enabled = Boolean(this.canvas && this.ctx);
+      this.particles = [];
+      this.mode = "idle";
+      this.energy = 0.35;
+      this.targetEnergy = 0.35;
+      this.pulse = 0;
+      this.time = 0;
+      this.lastTs = null;
+      this.rafId = null;
+      this.pointer = { x: 0, y: 0 };
+      this.camera = { x: 0, y: 0 };
+      this.center = { x: 0, y: 0 };
+      this.size = { w: 0, h: 0 };
+      this._boundResize = this.resize.bind(this);
+      this._boundPointer = this.onPointerMove.bind(this);
+
+      if (!this.enabled) {
+        return;
+      }
+
+      this.resize();
+      this.buildParticles();
+      window.addEventListener("resize", this._boundResize);
+      window.addEventListener("pointermove", this._boundPointer, { passive: true });
+    }
+
+    start() {
+      if (!this.enabled) {
+        return;
+      }
+      this.rafId = requestAnimationFrame((ts) => this.frame(ts));
+    }
+
+    setMode(mode) {
+      this.mode = mode;
+    }
+
+    setEnergy(value) {
+      this.targetEnergy = clamp(value, 0.18, 1);
+    }
+
+    boost(amount = 0.24) {
+      this.pulse = clamp(this.pulse + amount, 0, 1.2);
+    }
+
+    onPointerMove(event) {
+      const x = event.clientX / Math.max(1, this.size.w);
+      const y = event.clientY / Math.max(1, this.size.h);
+      this.pointer.x = (x - 0.5) * 2;
+      this.pointer.y = (y - 0.5) * 2;
+    }
+
+    resize() {
+      if (!this.enabled) {
+        return;
+      }
+      const dpr = window.devicePixelRatio || 1;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      this.canvas.width = Math.floor(width * dpr);
+      this.canvas.height = Math.floor(height * dpr);
+      this.canvas.style.width = `${width}px`;
+      this.canvas.style.height = `${height}px`;
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      this.size.w = width;
+      this.size.h = height;
+      this.center.x = width * 0.5;
+      this.center.y = height * 0.5;
+    }
+
+    buildParticles() {
+      const count = Math.max(120, Math.min(240, Math.floor((this.size.w * this.size.h) / 8200)));
+      this.particles = [];
+      for (let i = 0; i < count; i += 1) {
+        const particle = {
+          x: 0,
+          y: 0,
+          z: 0,
+          speed: 0,
+          wobble: 0,
+          seed: Math.random() * Math.PI * 2,
+        };
+        this.resetParticle(particle, true);
+        this.particles.push(particle);
+      }
+    }
+
+    resetParticle(particle, initial = false) {
+      particle.x = (Math.random() - 0.5) * 180;
+      particle.y = (Math.random() - 0.5) * 110;
+      particle.z = initial ? Math.random() * 120 + 4 : 120 + Math.random() * 22;
+      particle.speed = 0.5 + Math.random() * 1.3;
+      particle.wobble = 0.2 + Math.random() * 0.8;
+      particle.seed = Math.random() * Math.PI * 2;
+    }
+
+    project(particle) {
+      const depth = particle.z + 16;
+      if (depth <= 0) {
+        return null;
+      }
+
+      const perspective = 320 / depth;
+      const x = this.center.x + (particle.x + this.camera.x * 28) * perspective;
+      const y = this.center.y + (particle.y + this.camera.y * 18) * perspective;
+      const size = (0.7 + (130 - particle.z) * 0.022) * (0.55 + this.energy * 0.85);
+      return { x, y, size, perspective };
+    }
+
+    drawCorridor() {
+      const ctx = this.ctx;
+      const w = this.size.w;
+      const h = this.size.h;
+      const cx = this.center.x;
+      const cy = this.center.y;
+
+      ctx.save();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = `rgba(56, 189, 248, ${(0.09 + this.energy * 0.12).toFixed(3)})`;
+
+      for (let i = 0; i <= 8; i += 1) {
+        const t = i / 8;
+        const offsetY = (t - 0.5) * h * 0.62;
+        const shrink = 0.09 + (1 - t) * 0.78;
+        ctx.beginPath();
+        ctx.moveTo(cx - w * shrink, cy + offsetY + this.camera.y * 14);
+        ctx.lineTo(cx + w * shrink, cy + offsetY + this.camera.y * 14);
+        ctx.stroke();
+      }
+
+      for (let i = -5; i <= 5; i += 1) {
+        const t = i / 5;
+        ctx.beginPath();
+        ctx.moveTo(cx + t * w * 0.7, cy + h * 0.36);
+        ctx.lineTo(cx + t * w * 0.08 + this.camera.x * 16, cy - h * 0.38);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    drawSweep() {
+      const ctx = this.ctx;
+      const radius = Math.min(this.size.w, this.size.h) * (0.14 + this.energy * 0.07);
+      const angleBase = this.time * (0.45 + this.energy * 0.22);
+
+      ctx.save();
+      ctx.translate(this.center.x + this.camera.x * 14, this.center.y + this.camera.y * 8);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = `rgba(34, 211, 238, ${0.45 + this.energy * 0.35})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, angleBase, angleBase + 1.15);
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(125, 211, 252, 0.18)";
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * 1.42, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    drawParticles() {
+      const ctx = this.ctx;
+      const projected = [];
+
+      for (let i = 0; i < this.particles.length; i += 1) {
+        const item = this.project(this.particles[i]);
+        if (!item) {
+          continue;
+        }
+        if (item.x < -40 || item.x > this.size.w + 40 || item.y < -40 || item.y > this.size.h + 40) {
+          continue;
+        }
+        projected.push(item);
+      }
+
+      ctx.save();
+      for (let i = 0; i < projected.length; i += 1) {
+        const p = projected[i];
+        const alpha = clamp(0.22 + p.perspective * 0.95 + this.energy * 0.22, 0.16, 0.95);
+        ctx.fillStyle = `rgba(125, 211, 252, ${alpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = `rgba(56, 189, 248, ${(0.07 + this.energy * 0.12).toFixed(3)})`;
+      for (let i = 0; i < projected.length - 4; i += 5) {
+        const a = projected[i];
+        const b = projected[i + 3];
+        if (!a || !b) {
+          continue;
+        }
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        if (dx * dx + dy * dy > 38000) {
+          continue;
+        }
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    frame(timestamp) {
+      if (!this.enabled) {
+        return;
+      }
+
+      const dtMs = this.lastTs == null ? 16.6 : Math.min(50, timestamp - this.lastTs);
+      const dt = dtMs / 1000;
+      this.lastTs = timestamp;
+      this.time += dt;
+
+      this.energy += (this.targetEnergy - this.energy) * Math.min(1, dt * 3.8);
+      this.pulse *= Math.max(0, 1 - dt * 1.6);
+      this.camera.x += (this.pointer.x * 0.85 - this.camera.x) * Math.min(1, dt * 2.3);
+      this.camera.y += (this.pointer.y * 0.55 - this.camera.y) * Math.min(1, dt * 2.3);
+
+      let modeBoost = 0;
+      if (this.mode === "searching") {
+        modeBoost = 0.7;
+      } else if (this.mode === "engaged") {
+        modeBoost = 0.42;
+      } else if (this.mode === "alert") {
+        modeBoost = 0.9;
+      }
+
+      const travel = (0.48 + this.energy * 1.45 + modeBoost + this.pulse * 0.95) * dt * 60;
+      for (let i = 0; i < this.particles.length; i += 1) {
+        const p = this.particles[i];
+        p.z -= travel * p.speed;
+        p.x += Math.sin(this.time * p.wobble + p.seed) * 0.22;
+        p.y += Math.cos(this.time * (p.wobble + 0.24) + p.seed) * 0.16;
+        if (p.z <= 2) {
+          this.resetParticle(p, false);
+        }
+      }
+
+      this.ctx.clearRect(0, 0, this.size.w, this.size.h);
+      this.drawCorridor();
+      this.drawParticles();
+      this.drawSweep();
+      this.rafId = requestAnimationFrame((ts) => this.frame(ts));
+    }
   }
 
   const state = {
@@ -43,6 +303,9 @@
     debounceTimer: null,
     activeController: null,
     virtualCleanup: null,
+    scene: null,
+    sceneMode: "idle",
+    sceneEnergy: 0.35,
   };
 
   const elements = {
@@ -70,10 +333,13 @@
     statCache: document.getElementById("stat-cache"),
     statRetry: document.getElementById("stat-retry"),
     statIndex: document.getElementById("stat-index"),
+    statEnergy: document.getElementById("stat-energy"),
     categoryLabel: document.getElementById("category-label"),
     sourceLabel: document.getElementById("source-label"),
     securityLabel: document.getElementById("security-label"),
     ontologyLabel: document.getElementById("ontology-label"),
+    sceneStatus: document.getElementById("scene-status"),
+    sceneCanvas: document.getElementById("action-canvas"),
   };
 
   const THEME_KEY = "semantic_search_theme";
@@ -109,6 +375,43 @@
     state.virtualCleanup = null;
   }
 
+  function setSceneMode(mode, boost = true) {
+    state.sceneMode = mode;
+
+    const labels = {
+      idle: "SCENE: IDLE",
+      searching: "SCENE: SWEEP",
+      engaged: "SCENE: ENGAGED",
+      alert: "SCENE: ALERT",
+    };
+    const label = labels[mode] || labels.idle;
+    elements.sceneStatus.textContent = label;
+
+    elements.sceneStatus.classList.remove("text-cyan-100", "text-emerald-100", "text-red-100");
+    if (mode === "alert") {
+      elements.sceneStatus.classList.add("text-red-100");
+    } else if (mode === "engaged") {
+      elements.sceneStatus.classList.add("text-emerald-100");
+    } else {
+      elements.sceneStatus.classList.add("text-cyan-100");
+    }
+
+    if (state.scene) {
+      state.scene.setMode(mode);
+      if (boost) {
+        state.scene.boost(mode === "alert" ? 0.45 : 0.22);
+      }
+    }
+  }
+
+  function setSceneEnergy(value) {
+    state.sceneEnergy = clamp(value, 0.18, 1);
+    if (state.scene) {
+      state.scene.setEnergy(state.sceneEnergy);
+    }
+    elements.statEnergy.textContent = `${Math.round(state.sceneEnergy * 100)}%`;
+  }
+
   function setLoading(value) {
     state.loading = value;
     elements.loading.classList.toggle("hidden", !value);
@@ -117,6 +420,8 @@
     elements.nextPage.disabled = value || state.page >= state.totalPages;
 
     if (value) {
+      setSceneMode("searching", true);
+      setSceneEnergy(Math.max(0.38, state.sceneEnergy + 0.12));
       clearVirtualizedListeners();
       const skeletonCount = Math.max(3, Math.min(state.pageSize, 8));
       elements.loading.innerHTML = Array.from({ length: skeletonCount })
@@ -354,6 +659,7 @@
     elements.statCache.textContent = state.cacheHit ? "HIT" : "MISS";
     elements.statRetry.textContent = String(state.retries);
     elements.statIndex.textContent = state.indexVersion || "--";
+    elements.statEnergy.textContent = `${Math.round(state.sceneEnergy * 100)}%`;
   }
 
   function buildResultCard(result, index, virtualized = false) {
@@ -551,6 +857,15 @@
       state.facets = payload.facets && typeof payload.facets === "object" ? payload.facets : emptyFacetState();
       state.facetPoolSize = Number(payload.facet_pool_size || 0);
 
+      const topScore = Number(state.results[0]?.score || 0);
+      const energy = clamp(
+        0.24 + Math.log10(state.total + 1) * 0.26 + Math.max(0, topScore) * 0.36 + (state.cacheHit ? 0.06 : 0.12),
+        0.2,
+        1
+      );
+      setSceneEnergy(energy);
+      setSceneMode(state.total > 0 ? "engaged" : "idle", true);
+
       refreshFilterSelects();
       syncUrlState();
       renderResults();
@@ -569,6 +884,8 @@
       state.cacheHit = false;
       state.facets = emptyFacetState();
       state.facetPoolSize = 0;
+      setSceneMode("alert", true);
+      setSceneEnergy(0.92);
       refreshFilterSelects();
       renderResults();
     } finally {
@@ -595,12 +912,17 @@
     });
 
     elements.query.addEventListener("input", () => {
+      if (state.scene) {
+        state.scene.boost(0.07);
+      }
       queueSearch({ resetPage: true, immediate: false });
     });
 
     elements.resetBtn.addEventListener("click", () => {
       resetForm();
       refreshFilterSelects();
+      setSceneMode("idle", true);
+      setSceneEnergy(0.28);
       queueSearch({ resetPage: true, immediate: true });
     });
 
@@ -608,6 +930,9 @@
       setError("");
       try {
         await loadFilters();
+        if (state.scene) {
+          state.scene.boost(0.2);
+        }
         queueSearch({ resetPage: false, immediate: true });
       } catch (error) {
         setError(error.message || "Failed to refresh filters");
@@ -664,6 +989,13 @@
   async function bootstrap() {
     bootstrapTheme();
 
+    state.scene = new ActionScene(elements.sceneCanvas);
+    if (state.scene) {
+      state.scene.start();
+      state.scene.setEnergy(state.sceneEnergy);
+      state.scene.setMode(state.sceneMode);
+    }
+
     const savedToken = sessionStorage.getItem(TOKEN_KEY);
     if (savedToken) {
       elements.apiKey.value = savedToken;
@@ -675,6 +1007,8 @@
     if (window.APP_CONFIG?.zeroTrustEnabled && !elements.apiKey.value.trim()) {
       setError("Enter API key to load filters and start semantic search.");
       refreshFilterSelects();
+      setSceneMode("idle", false);
+      setSceneEnergy(0.24);
       renderResults();
       return;
     }
@@ -684,6 +1018,8 @@
       queueSearch({ resetPage: false, immediate: true });
     } catch (error) {
       setError(error.message || "Initialization failed");
+      setSceneMode("alert", false);
+      setSceneEnergy(0.9);
     }
   }
 
