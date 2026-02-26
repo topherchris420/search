@@ -15,7 +15,6 @@ from flask import Flask, render_template_string, jsonify
 from flask_cors import CORS
 from threading import Thread, Lock
 import time
-from collections import deque
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
 from datetime import datetime
@@ -125,7 +124,6 @@ class SpectralNode:
     pattern: str         # "emerging", "fading", "stable"
     trend: float         # temporal trend slope
     position: Tuple[float, float, float]  # 3D coordinates
-    history: deque         # Recent power measurements
 
 
 @dataclass
@@ -151,6 +149,20 @@ class RFProcessor:
         self.bands = self._initialize_bands()
         self.lock = Lock()
         
+        # Vectorized history buffer: (NUM_BANDS, WINDOW_SIZE)
+        self.history_buffer = np.full((self.config.NUM_BANDS, self.config.WINDOW_SIZE), -90.0)
+        self.history_idx = 0
+        self.samples_processed = 0
+
+        # Precompute trend weights for N=25
+        # x = [0, 1/(N-1), ..., 1]
+        # x_prime = x - mean(x)
+        # weights = x_prime / sum(x_prime^2)
+        N = 25
+        x = np.linspace(0.0, 1.0, N)
+        x_prime = x - np.mean(x)
+        self.trend_weights = x_prime / np.sum(x_prime**2)
+
     def _initialize_bands(self) -> List[SpectralNode]:
         """Initialize frequency band nodes"""
         bands = []
@@ -190,8 +202,7 @@ class RFProcessor:
                 band_class=band_class,
                 pattern="stable",
                 trend=0.0,
-                position=position,
-                history=deque(maxlen=self.config.WINDOW_SIZE)
+                position=position
             )
             bands.append(node)
         
@@ -200,43 +211,56 @@ class RFProcessor:
     def update_spectrum(self, power_data: np.ndarray):
         """Update spectral nodes with new power measurements"""
         with self.lock:
+            # Update history buffer
+            self.history_buffer[:, self.history_idx] = power_data
+            self.history_idx = (self.history_idx + 1) % self.config.WINDOW_SIZE
+            self.samples_processed += 1
+
+            if self.samples_processed < 10:
+                # Just update current power
+                for i, node in enumerate(self.bands):
+                     if i < len(power_data):
+                         node.power = power_data[i]
+                return
+
+            # Vectorized statistics
+            # Note: We compute over the entire window
+            baselines = np.median(self.history_buffer, axis=1)
+            variances = np.var(self.history_buffer, axis=1)
+
+            # Vectorized Trend (last 25 samples)
+            # Get indices for the last 25 samples in chronological order
+            indices = (np.arange(self.history_idx - 25, self.history_idx) + self.config.WINDOW_SIZE) % self.config.WINDOW_SIZE
+            recent_history = self.history_buffer[:, indices]
+            # Matrix multiplication for slopes: (NUM_BANDS, 25) @ (25,) -> (NUM_BANDS,)
+            trends = np.dot(recent_history, self.trend_weights)
+
+            # Vectorized anomaly scores
+            stds = np.sqrt(variances)
+            stds[stds == 0] = 1.0
+            anomaly_scores = np.abs(power_data - baselines) / stds
+
+            # Vectorized stability
+            normalized_vars = variances / (np.abs(baselines) + 1e-6)
+            stabilities = np.maximum(0.0, 1.0 - normalized_vars / self.config.STABILITY_THRESHOLD)
+
+            # Update nodes
+            # Still need to iterate to update object fields, but heavy math is done
             for i, node in enumerate(self.bands):
                 if i < len(power_data):
-                    power = power_data[i]
-                    node.history.append(power)
-                    node.power = power
+                    node.power = power_data[i]
+                    node.baseline = baselines[i]
+                    node.variance = variances[i]
+                    node.anomaly_score = anomaly_scores[i]
+                    node.stability = stabilities[i]
+                    node.trend = trends[i]
                     
-                    # Compute statistics
-                    if len(node.history) >= 10:
-                        history_array = np.array(node.history)
-                        node.baseline = np.median(history_array)
-                        node.variance = np.var(history_array)
-                        
-                        # Anomaly score (z-score)
-                        std = np.sqrt(node.variance) if node.variance > 0 else 1.0
-                        node.anomaly_score = abs(power - node.baseline) / std
-                        
-                        # Stability metric (inverse of normalized variance)
-                        normalized_var = node.variance / (abs(node.baseline) + 1e-6)
-                        node.stability = max(0, 1 - normalized_var / self.config.STABILITY_THRESHOLD)
-
-                        node.trend = self._compute_trend(history_array)
-                        if node.trend > 0.08:
-                            node.pattern = "emerging"
-                        elif node.trend < -0.08:
-                            node.pattern = "fading"
-                        else:
-                            node.pattern = "stable"
-
-    @staticmethod
-    def _compute_trend(history: np.ndarray) -> float:
-        """Estimate trend with linear fit over normalized time."""
-        if len(history) < 5:
-            return 0.0
-        y = history[-25:] if len(history) >= 25 else history
-        x = np.linspace(0.0, 1.0, len(y))
-        slope, _ = np.polyfit(x, y, 1)
-        return float(slope)
+                    if node.trend > 0.08:
+                        node.pattern = "emerging"
+                    elif node.trend < -0.08:
+                        node.pattern = "fading"
+                    else:
+                        node.pattern = "stable"
     
     def get_spectral_state(self) -> Dict:
         """Get current spectral state for visualization"""
