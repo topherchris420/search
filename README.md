@@ -1,4 +1,4 @@
-# Semantic Ontology Search
+# Vers3Dynamics Search
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/flask-3.x-black)](https://flask.palletsprojects.com/)
@@ -14,7 +14,6 @@ Production-focused semantic search service with embeddings + cosine similarity, 
 - UI: `GET /`
 - Health: `GET /api/health`
 - Search API: `POST /api/search`
-- AIP Logic config: [`palantir/aip_logic.yaml`](./palantir/aip_logic.yaml)
 
 ## Core Capabilities
 - Semantic search using embeddings + cosine similarity (`hash` fallback, optional `sentence-transformers` or `openai` providers)
