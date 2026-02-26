@@ -11,7 +11,7 @@ License: MIT
 
 import numpy as np
 import plotly.graph_objects as go
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 from flask_cors import CORS
 from threading import Thread, Lock
 import time
@@ -366,8 +366,8 @@ class Visualizer:
     def __init__(self, config: Config):
         self.config = config
         
-    def create_3d_scene(self, spectral_state: Dict) -> str:
-        """Create Plotly 3D visualization"""
+    def _get_node_attributes(self, spectral_state: Dict) -> Tuple[List, List, List, List, List, List]:
+        """Extract visualization attributes from spectral state"""
         nodes = spectral_state['nodes']
         
         # Extract data for visualization
@@ -406,6 +406,29 @@ class Visualizer:
                    f"Pattern: {node['pattern']} ({node['trend']:+.2f})<br>"
                    f"Class: {node['band_class']}")
             hover_texts.append(text)
+
+        # Convert sizes to list to ensure JSON serializability
+        sizes_list = sizes.tolist()
+
+        return x, y, z, sizes_list, colors, hover_texts
+
+    def get_visualization_update(self, spectral_state: Dict) -> Dict:
+        """Get visualization update data for Plotly.restyle"""
+        x, y, z, sizes, colors, hover_texts = self._get_node_attributes(spectral_state)
+
+        # Wrap values in lists as Plotly.restyle expects arrays for each trace
+        return {
+            'x': [x],
+            'y': [y],
+            'z': [z],
+            'marker.size': [sizes],
+            'marker.color': [colors],
+            'text': [hover_texts]
+        }
+
+    def create_3d_scene(self, spectral_state: Dict) -> str:
+        """Create Plotly 3D visualization"""
+        x, y, z, sizes, colors, hover_texts = self._get_node_attributes(spectral_state)
         
         # Create spectral nodes trace
         nodes_trace = go.Scatter3d(
@@ -530,6 +553,11 @@ class Vers3DynamicsSearch:
         """Get current visualization data as JSON"""
         spectral_state = self.processor.get_spectral_state()
         return self.visualizer.create_3d_scene(spectral_state)
+
+    def get_visualization_update_data(self) -> Dict:
+        """Get visualization update data (lightweight)"""
+        spectral_state = self.processor.get_spectral_state()
+        return self.visualizer.get_visualization_update(spectral_state)
 
     def get_status_snapshot(self) -> Dict:
         """Return current runtime status metrics for the API/UI."""
@@ -880,24 +908,41 @@ HTML_TEMPLATE = """
         }
 
         function updateVisualization() {
-            fetch('/api/spectrum')
+            const mode = updateCount === 0 ? 'full' : 'delta';
+            fetch(`/api/spectrum?mode=${mode}`)
                 .then(response => response.json())
                 .then(data => {
-                    const plotData = JSON.parse(data.plot);
-                    const layout = plotData.layout;
                     const plotDiv = document.getElementById('plot');
 
-                    applyLayoutTweaks(layout);
+                    if (data.plot) {
+                        // Full initialization
+                        const plotData = JSON.parse(data.plot);
+                        const layout = plotData.layout;
 
-                    if (updateCount === 0) {
+                        applyLayoutTweaks(layout);
+
                         document.getElementById('loading').style.display = 'none';
                         Plotly.newPlot(plotDiv, plotData.data, layout, {
                             responsive: true,
                             displayModeBar: true,
                             displaylogo: false
                         });
-                    } else {
-                        Plotly.react(plotDiv, plotData.data, layout, { responsive: true, displaylogo: false });
+                    } else if (data.delta) {
+                        // Delta update (restyle)
+                        Plotly.restyle(plotDiv, data.delta, [0]);
+
+                        // Handle manual rotation since we aren't getting a new layout
+                        if (autoRotate) {
+                            rotationStep += 0.035;
+                            const newCamera = {
+                                eye: {
+                                    x: 1.75 * Math.cos(rotationStep),
+                                    y: 1.75 * Math.sin(rotationStep),
+                                    z: 1.05 + 0.2 * Math.sin(rotationStep * 0.8)
+                                }
+                            };
+                            Plotly.relayout(plotDiv, { 'scene.camera': newCamera });
+                        }
                     }
 
                     updateCount++;
@@ -997,15 +1042,23 @@ def get_spectrum():
     """API endpoint for spectrum data"""
     try:
         active_system = ensure_system_initialized()
+        mode = request.args.get('mode', 'full')
+
         spectral_state = active_system.processor.get_spectral_state()
-        plot_json = active_system.visualizer.create_3d_scene(spectral_state)
-        return jsonify({
-            'plot': plot_json,
+
+        response_data = {
             'status': 'active',
             'num_anomalies': spectral_state['num_anomalies'],
             'summary': spectral_state['summary'],
             'timestamp': spectral_state['timestamp']
-        })
+        }
+
+        if mode == 'delta':
+            response_data['delta'] = active_system.visualizer.get_visualization_update(spectral_state)
+        else:
+            response_data['plot'] = active_system.visualizer.create_3d_scene(spectral_state)
+
+        return jsonify(response_data)
     except Exception as e:
         logger.error(f"API error: {e}")
         return jsonify({'error': str(e)}), 500
