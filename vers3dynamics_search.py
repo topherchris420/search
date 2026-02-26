@@ -586,6 +586,9 @@ class Vers3DynamicsSearch:
     
     def _acquisition_loop(self):
         """Continuous acquisition and processing loop"""
+        next_call = time.time()
+        interval = 1.0 / self.config.SAMPLE_RATE
+
         while self.running:
             try:
                 # Get spectrum snapshot
@@ -594,12 +597,17 @@ class Vers3DynamicsSearch:
                 # Process spectrum
                 self.processor.update_spectrum(spectrum)
                 
-                # Sleep until next sample
-                time.sleep(1.0 / self.config.SAMPLE_RATE)
+                # Sleep until next sample (drift corrected)
+                next_call = next_call + interval
+                sleep_time = next_call - time.time()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 
             except Exception as e:
                 logger.error(f"Acquisition error: {e}")
                 time.sleep(0.5)
+                # Reset timing on error to avoid catch-up burst
+                next_call = time.time()
     
     def get_visualization_data(self) -> str:
         """Get current visualization data as JSON"""
