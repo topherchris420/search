@@ -56,13 +56,55 @@ class Config:
     SIMULATE_SDR = True
     NUM_SIGNAL_SOURCES = 8
 
+    @staticmethod
+    def _read_env_int(name: str, default: int, minimum: int = None) -> int:
+        """Read an integer from env with validation and fallback."""
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+
+        try:
+            parsed = int(raw_value)
+        except ValueError:
+            logger.warning("Invalid integer for %s=%r; using default %s", name, raw_value, default)
+            return default
+
+        if minimum is not None and parsed < minimum:
+            logger.warning("%s=%s is below minimum %s; using minimum", name, parsed, minimum)
+            return minimum
+
+        return parsed
+
+    @staticmethod
+    def _read_env_float(name: str, default: float, minimum: float = None) -> float:
+        """Read a float from env with validation and fallback."""
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+
+        try:
+            parsed = float(raw_value)
+        except ValueError:
+            logger.warning("Invalid float for %s=%r; using default %s", name, raw_value, default)
+            return default
+
+        if minimum is not None and parsed < minimum:
+            logger.warning("%s=%s is below minimum %s; using minimum", name, parsed, minimum)
+            return minimum
+
+        return parsed
+
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables for deployment flexibility."""
         config = cls()
-        config.PORT = int(os.getenv("RF_MONITOR_PORT", config.PORT))
-        config.SAMPLE_RATE = max(1, int(os.getenv("RF_SAMPLE_RATE_HZ", config.SAMPLE_RATE)))
-        config.ANOMALY_THRESHOLD = float(os.getenv("RF_ANOMALY_SIGMA", config.ANOMALY_THRESHOLD))
+        config.PORT = cls._read_env_int("RF_MONITOR_PORT", config.PORT, minimum=1)
+        config.SAMPLE_RATE = cls._read_env_int("RF_SAMPLE_RATE_HZ", config.SAMPLE_RATE, minimum=1)
+        config.ANOMALY_THRESHOLD = cls._read_env_float(
+            "RF_ANOMALY_SIGMA",
+            config.ANOMALY_THRESHOLD,
+            minimum=0.0
+        )
         return config
 
 
