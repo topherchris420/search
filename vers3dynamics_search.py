@@ -17,7 +17,7 @@ from threading import Thread, Lock
 import time
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import os
 
@@ -153,6 +153,7 @@ class RFProcessor:
         self.history_buffer = np.full((self.config.NUM_BANDS, self.config.WINDOW_SIZE), -90.0)
         self.history_idx = 0
         self.samples_processed = 0
+        self.last_sample_time = None
 
         # Precompute trend weights for N=25
         # x = [0, 1/(N-1), ..., 1]
@@ -211,6 +212,7 @@ class RFProcessor:
     def update_spectrum(self, power_data: np.ndarray):
         """Update spectral nodes with new power measurements"""
         with self.lock:
+            self.last_sample_time = datetime.now(timezone.utc)
             # Update history buffer
             self.history_buffer[:, self.history_idx] = power_data
             self.history_idx = (self.history_idx + 1) % self.config.WINDOW_SIZE
@@ -271,6 +273,12 @@ class RFProcessor:
             for node in self.bands:
                 powers.append(node.power)
                 stabilities.append(node.stability)
+                if node.stability < 0.4:
+                    confidence = 'high'
+                elif node.stability < 0.7:
+                    confidence = 'medium'
+                else:
+                    confidence = 'low'
                 nodes_data.append({
                     'frequency': node.frequency,
                     'power': node.power,
@@ -280,10 +288,12 @@ class RFProcessor:
                     'pattern': node.pattern,
                     'trend': node.trend,
                     'band_class': node.band_class,
+                    'confidence': confidence,
                     'position': node.position
                 })
             
-            num_anomalies = sum(1 for n in self.bands if n.anomaly_score > self.config.ANOMALY_THRESHOLD)
+            anomaly_nodes = [n for n in self.bands if n.anomaly_score > self.config.ANOMALY_THRESHOLD]
+            num_anomalies = len(anomaly_nodes)
             strongest_node = max(self.bands, key=lambda n: n.power)
             average_power = float(np.mean(powers)) if powers else -90.0
             average_stability = float(np.mean(stabilities)) if stabilities else 1.0
@@ -292,18 +302,58 @@ class RFProcessor:
                 'fading': sum(1 for n in self.bands if n.pattern == 'fading'),
                 'stable': sum(1 for n in self.bands if n.pattern == 'stable')
             }
+            severity_counts = {'high': 0, 'medium': 0, 'low': 0}
+            anomaly_details = []
+            for node in anomaly_nodes:
+                if node.anomaly_score >= self.config.ANOMALY_THRESHOLD + 2.0:
+                    severity = 'high'
+                elif node.anomaly_score >= self.config.ANOMALY_THRESHOLD + 1.0:
+                    severity = 'medium'
+                else:
+                    severity = 'low'
+                severity_counts[severity] += 1
+
+                if node.stability < 0.4:
+                    confidence = 'high'
+                elif node.stability < 0.7:
+                    confidence = 'medium'
+                else:
+                    confidence = 'low'
+
+                anomaly_details.append({
+                    'frequency_mhz': round(node.frequency / 1e6, 2),
+                    'severity': severity,
+                    'confidence': confidence,
+                    'score_sigma': round(node.anomaly_score, 2)
+                })
+
+            data_age_seconds = None
+            stale = True
+            if self.last_sample_time is not None:
+                data_age_seconds = (datetime.now(timezone.utc) - self.last_sample_time).total_seconds()
+                stale = data_age_seconds > 2.0
 
             return {
                 'nodes': nodes_data,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'num_anomalies': num_anomalies,
+                'anomaly_details': anomaly_details,
                 'summary': {
                     'average_power': average_power,
                     'average_stability': average_stability,
                     'strongest_frequency': strongest_node.frequency,
                     'strongest_power': strongest_node.power,
                     'anomaly_ratio': num_anomalies / self.config.NUM_BANDS,
-                    'pattern_counts': pattern_counts
+                    'pattern_counts': pattern_counts,
+                    'severity_counts': severity_counts
+                },
+                'data_age_seconds': None if data_age_seconds is None else round(data_age_seconds, 1),
+                'stale': stale,
+                'source_mode': 'SIMULATED' if self.config.SIMULATE_SDR else 'LIVE',
+                'provenance': {
+                    'sensor_id': 'SIM-RF-001' if self.config.SIMULATE_SDR else 'SDR-RF-001',
+                    'firmware_version': 'sim-fw-2.1.0' if self.config.SIMULATE_SDR else 'sdr-fw-1.9.4',
+                    'acquisition_source': 'Synthetic RF generator' if self.config.SIMULATE_SDR else 'Software-defined radio'
                 }
             }
 
@@ -428,7 +478,8 @@ class Visualizer:
                    f"Anomaly: {node['anomaly_score']:.2f}σ<br>"
                    f"Stability: {node['stability']:.2%}<br>"
                    f"Pattern: {node['pattern']} ({node['trend']:+.2f})<br>"
-                   f"Class: {node['band_class']}")
+                   f"Class: {node['band_class']}<br>"
+                   f"Confidence: {node.get('confidence', 'low')}")
             hover_texts.append(text)
         
         # Create spectral nodes trace
@@ -471,25 +522,25 @@ class Visualizer:
                 xanchor='center'
             ),
             scene=dict(
-                xaxis=dict(title='X Axis', backgroundcolor='rgb(2, 10, 8)',
-                          gridcolor='rgba(0, 255, 180, 0.22)', showbackground=True, zeroline=False),
-                yaxis=dict(title='Y Axis', backgroundcolor='rgb(2, 10, 8)',
-                          gridcolor='rgba(0, 255, 180, 0.22)', showbackground=True, zeroline=False),
-                zaxis=dict(title='Frequency Axis', backgroundcolor='rgb(2, 10, 8)',
-                          gridcolor='rgba(0, 255, 180, 0.22)', showbackground=True, zeroline=False),
-                bgcolor='rgb(1, 8, 6)',
+                xaxis=dict(title='Cross-range (km)', backgroundcolor='rgb(17, 26, 42)',
+                          gridcolor='rgba(99, 208, 255, 0.18)', showbackground=True, zeroline=False),
+                yaxis=dict(title='Down-range (km)', backgroundcolor='rgb(17, 26, 42)',
+                          gridcolor='rgba(99, 208, 255, 0.18)', showbackground=True, zeroline=False),
+                zaxis=dict(title='Frequency Band Index (bin)', backgroundcolor='rgb(17, 26, 42)',
+                          gridcolor='rgba(99, 208, 255, 0.18)', showbackground=True, zeroline=False),
+                bgcolor='rgb(15, 24, 39)',
                 camera=dict(
                     eye=dict(x=1.5, y=1.5, z=1.2)
                 )
             ),
-            paper_bgcolor='rgb(0, 6, 5)',
-            font=dict(color='rgb(130, 255, 210)', family='Courier New'),
+            paper_bgcolor='rgb(13, 20, 32)',
+            font=dict(color='rgb(243, 245, 248)', family='Inter, Segoe UI, Arial'),
             showlegend=True,
             legend=dict(
                 x=0.02,
                 y=0.98,
-                bgcolor='rgba(0, 16, 14, 0.75)',
-                bordercolor='rgba(0, 255, 200, 0.5)',
+                bgcolor='rgba(23, 33, 51, 0.92)',
+                bordercolor='rgba(99, 208, 255, 0.45)',
                 borderwidth=1
             ),
             margin=dict(l=0, r=0, t=10, b=0)
@@ -600,49 +651,39 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vers3Dynamics Search - RF Spectrum Monitor</title>
+    <title>Vers3Dynamics Search - Mission RF Monitor</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         :root {
-            --neon-primary: #00ff88;
-            --neon-cyan: #00ffd5;
-            --neon-magenta: #a000ff;
-            --hud-bg: rgba(0, 12, 8, 0.72);
-            --hud-border: rgba(0, 255, 170, 0.45);
+            --bg-primary: #0d1420;
+            --bg-panel: #172133;
+            --bg-panel-soft: #111a2a;
+            --text-primary: #f3f5f8;
+            --text-muted: #b4bfcd;
+            --accent-amber: #ffbf47;
+            --accent-cyan: #63d0ff;
+            --status-good: #57d49a;
+            --status-warn: #ffbf47;
+            --status-critical: #ff7f7f;
+            --border: #2b384e;
+            --focus: #63d0ff;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Courier New', monospace;
-            color: var(--neon-cyan);
-            background:
-                radial-gradient(circle at 20% 10%, rgba(0, 120, 70, 0.25), transparent 45%),
-                radial-gradient(circle at 80% 80%, rgba(0, 70, 100, 0.18), transparent 55%),
-                #030807;
+            font-family: Inter, "Segoe UI", Arial, sans-serif;
+            color: var(--text-primary);
+            background: var(--bg-primary);
             overflow: hidden;
             min-height: 100vh;
+            font-size: 14px;
+            line-height: 1.4;
         }
 
-        body::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            pointer-events: none;
-            background: repeating-linear-gradient(
-                to bottom,
-                rgba(30, 255, 180, 0.03),
-                rgba(30, 255, 180, 0.03) 1px,
-                transparent 2px,
-                transparent 4px
-            );
-            animation: scanline 5s linear infinite;
-            opacity: 0.35;
-        }
-
-        @keyframes scanline {
-            from { transform: translateY(-20px); }
-            to { transform: translateY(20px); }
+        body.reduced-motion * {
+            animation: none !important;
+            transition: none !important;
         }
 
         .app-shell {
@@ -655,138 +696,131 @@ HTML_TEMPLATE = """
         #plot {
             width: 100%;
             height: 100%;
-            border: 1px solid var(--hud-border);
-            border-radius: 14px;
-            background: rgba(0, 0, 0, 0.4);
-            box-shadow: inset 0 0 35px rgba(0, 255, 160, 0.08), 0 0 25px rgba(0, 255, 170, 0.15);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #0f1827;
         }
 
         .hud-panel {
             position: absolute;
-            background: var(--hud-bg);
-            border: 1px solid var(--hud-border);
-            border-radius: 10px;
-            box-shadow: 0 0 20px rgba(0, 255, 170, 0.15);
-            backdrop-filter: blur(4px);
+            background: rgba(23, 33, 51, 0.92);
+            border: 1px solid var(--border);
+            border-radius: 8px;
         }
 
-        .hud-title {
-            font-size: 30px;
-            letter-spacing: 1px;
-            color: var(--neon-primary);
-            text-shadow: 0 0 12px rgba(0, 255, 140, 0.6);
-            margin-bottom: 4px;
-        }
-
-        .top-bar {
-            top: 24px;
+        .classification-banner {
             left: 24px;
             right: 24px;
-            padding: 12px 16px;
+            padding: 6px 12px;
+            text-align: center;
+            font-size: 12px;
+            letter-spacing: 0.06em;
+            color: var(--accent-amber);
+            z-index: 12;
+        }
+
+        .classification-banner.top { top: 8px; }
+        .classification-banner.bottom { bottom: 8px; }
+
+        .top-bar {
+            top: 46px;
+            left: 24px;
+            right: 24px;
+            padding: 10px 12px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             z-index: 10;
+            gap: 12px;
         }
 
-        .subtitle { font-size: 12px; color: rgba(140, 255, 220, 0.75); }
-
-        .status {
-            display: flex;
-            gap: 14px;
-            align-items: center;
-            font-size: 13px;
+        .hud-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
         }
+
+        .subtitle { font-size: 12px; color: var(--text-muted); }
+
+        .status { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
         .pill {
-            border: 1px solid rgba(0, 255, 170, 0.45);
+            border: 1px solid var(--border);
             border-radius: 999px;
-            padding: 5px 10px;
-            background: rgba(0, 255, 120, 0.1);
-            color: #a8ffd7;
-        }
-
-        .indicator {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-            background: #00ff7b;
-            box-shadow: 0 0 10px #00ff7b;
-            animation: pulse 1.6s infinite;
-        }
-
-        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.45;} }
-
-        .mapper {
-            top: 110px;
-            left: 24px;
-            width: 330px;
-            padding: 14px;
-            z-index: 9;
-        }
-
-        .mapper h3 {
-            color: #33ff9d;
-            border: 1px solid rgba(0, 255, 150, 0.45);
-            padding: 6px;
-            margin-bottom: 8px;
-            font-size: 30px;
-        }
-
-        .mapper .line { margin: 6px 0; font-size: 18px; color: #3be9b6; }
-        .mapper .line strong { color: #71ffef; }
-
-        .controls {
-            top: 110px;
-            right: 24px;
-            width: 320px;
-            padding: 14px;
-            z-index: 9;
+            padding: 4px 10px;
+            background: var(--bg-panel-soft);
+            color: var(--text-muted);
             font-size: 12px;
+            font-weight: 600;
         }
+        .pill.attention { border-color: var(--accent-amber); color: var(--accent-amber); }
+        .pill.good { border-color: var(--status-good); color: var(--status-good); }
 
-        .control-row { margin: 10px 0; }
-        .control-row label { display: flex; justify-content: space-between; margin-bottom: 5px; }
+        .mapper { top: 132px; left: 24px; width: 350px; padding: 12px; z-index: 9; }
+        .mapper h3 { font-size: 16px; margin-bottom: 8px; color: var(--text-primary); }
+        .mapper .line { margin: 6px 0; font-size: 14px; color: var(--text-muted); }
+        .mapper .line strong { color: var(--text-primary); }
 
-        input[type="range"] { width: 100%; accent-color: #18ff9f; }
+        .controls { top: 132px; right: 24px; width: 350px; padding: 12px; z-index: 9; }
+        .section-title { font-size: 16px; margin-bottom: 8px; color: var(--text-primary); }
+        .control-row { margin: 8px 0; }
+        .control-row label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
+        input[type="range"] { width: 100%; accent-color: var(--accent-cyan); }
 
         .btn {
-            border: 1px solid rgba(0,255,180,.45);
-            background: rgba(0, 255, 150, 0.12);
-            color: #9dffd9;
-            border-radius: 8px;
-            padding: 7px 10px;
+            border: 1px solid var(--border);
+            background: #1c2740;
+            color: var(--text-primary);
+            border-radius: 6px;
+            padding: 8px;
             cursor: pointer;
             width: 100%;
-            transition: .2s ease;
             font-family: inherit;
+            font-size: 14px;
         }
-
-        .btn:hover { background: rgba(0,255,150,.24); box-shadow: 0 0 12px rgba(0,255,150,.25); }
+        .btn:hover, .btn:focus-visible { border-color: var(--focus); outline: none; }
 
         .metrics {
             left: 24px;
             right: 24px;
-            bottom: 24px;
+            bottom: 40px;
             padding: 10px;
             z-index: 10;
             display: grid;
-            grid-template-columns: repeat(6, minmax(120px, 1fr));
+            grid-template-columns: repeat(6, minmax(140px, 1fr));
             gap: 8px;
         }
 
         .metric-card {
-            background: rgba(0, 20, 14, 0.6);
-            border: 1px solid rgba(0,255,170,.25);
+            background: var(--bg-panel-soft);
+            border: 1px solid var(--border);
             border-radius: 8px;
             padding: 8px;
-            min-height: 64px;
+            min-height: 68px;
         }
 
-        .metric-card .label { font-size: 11px; color: rgba(160, 255, 220, 0.78); }
-        .metric-card .value { font-size: 15px; color: #5bffbf; margin-top: 6px; font-weight: bold; }
+        .metric-card .label { font-size: 12px; color: var(--text-muted); }
+        .metric-card .value { font-size: 16px; color: var(--text-primary); margin-top: 4px; font-weight: 600; }
+
+        .event-log { right: 24px; bottom: 140px; width: 350px; padding: 10px; z-index: 9; max-height: 260px; overflow: auto; }
+        .event-log ul { list-style: none; font-size: 12px; color: var(--text-muted); }
+        .event-log li { border-left: 3px solid var(--border); padding: 4px 6px; margin-bottom: 6px; background: #121c2d; }
+        .event-log li strong { color: var(--text-primary); }
+
+        .simulation-watermark {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            font-size: 28px;
+            font-weight: 700;
+            color: rgba(255, 191, 71, 0.15);
+            letter-spacing: 0.2em;
+            z-index: 8;
+        }
 
         .loading {
             position: absolute;
@@ -795,79 +829,76 @@ HTML_TEMPLATE = """
             transform: translate(-50%, -50%);
             text-align: center;
             font-size: 20px;
-            color: #8fffd4;
+            color: var(--text-primary);
             z-index: 12;
         }
-
-        .spinner {
-            border: 4px solid rgba(0, 255, 180, 0.12);
-            border-top: 4px solid #00ffaa;
-            border-radius: 50%;
-            width: 44px;
-            height: 44px;
-            margin: 0 auto 14px;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin { from { transform: rotate(0deg);} to {transform: rotate(360deg);} }
     </style>
 </head>
 <body>
+    <div class="hud-panel classification-banner top">UNCLASSIFIED // FOUO (PLACEHOLDER)</div>
     <div class="app-shell">
         <div id="plot"></div>
+        <div id="simulation-watermark" class="simulation-watermark">SIMULATION MODE</div>
 
         <div class="hud-panel top-bar">
             <div>
-                <div class="hud-title">Vers3Dynamics</div>
-                <div class="subtitle">Real-time RF situational analysis and anomaly triage</div>
+                <h1 class="hud-title">R.A.I.N. Lab Mission Overview</h1>
+                <p class="subtitle">RF Spectrum Situational Awareness Console</p>
             </div>
             <div class="status">
-                <div class="pill"><span class="indicator"></span>Tracking<strong id="anomaly-counter">0</strong> ANOMALIES</div>
-                <div class="pill" id="update-counter">Updates: 0</div>
-                <div class="pill" id="last-update-pill">Syncing...</div>
+                <span class="pill" id="link-health-pill">LINK HEALTH: CHECKING</span>
+                <span class="pill" id="last-update-pill">DATA UTC: --</span>
+                <span class="pill" id="anomaly-counter">ANOMALIES H/M/L: 0/0/0</span>
+                <span class="pill attention" id="source-mode-pill">MODE: SIMULATED</span>
+                <span class="pill" id="data-age-pill">DATA AGE: --</span>
             </div>
         </div>
 
         <div class="hud-panel mapper">
-            <h3>R.A.I.N. Lab</h3>
-            <div class="line"><strong>A-</strong> 2.4 GHz Band</div>
-            <div class="line"><strong>B-</strong> 5.0 GHz Band</div>
-            <div class="line" style="color:#ff44d7;"><strong>C-</strong> 6.0 GHz Band</div>
-            <br>
-            <div class="line">[ CORE ] : AP Signal Strength</div>
-            <div class="line">[ SPHERE ] : Est. Coverage Volume</div>
-            <div class="line">[ BLUR ] : Positional Uncertainty</div>
-            <div class="line">[ ORIGIN ] : Local Receiver</div>
+            <h3>System State</h3>
+            <div class="line">Update Count: <strong id="update-counter">0</strong></div>
+            <div class="line">Display Mode: <strong id="stream-state">LIVE</strong></div>
+            <div class="line">Stale Warning: <strong id="stale-warning">NO</strong></div>
+            <div class="line">Sensor ID: <strong id="sensor-id">-</strong></div>
+            <div class="line">Firmware: <strong id="firmware-version">-</strong></div>
+            <div class="line">Source: <strong id="acquisition-source">-</strong></div>
         </div>
 
         <div class="hud-panel controls">
-            <div class="control-row"><button id="toggle-stream" class="btn">Pause Stream</button></div>
-            <div class="control-row">
-                <label for="refresh-slider"><span>Refresh Rate</span><strong id="refresh-value">500 ms</strong></label>
-                <input id="refresh-slider" type="range" min="200" max="1500" value="500" step="100">
-            </div>
-            <div class="control-row">
-                <label for="glow-slider"><span>Glow Intensity</span><strong id="glow-value">65%</strong></label>
-                <input id="glow-slider" type="range" min="20" max="100" value="65" step="5">
-            </div>
+            <h3 class="section-title">Operator Controls</h3>
+            <div class="control-row"><button id="toggle-stream" class="btn">Freeze Feed</button></div>
             <div class="control-row"><button id="toggle-rotate" class="btn" aria-pressed="true">Auto-Rotate: ON</button></div>
             <div class="control-row"><button id="reset-camera" class="btn">Reset Camera</button></div>
+            <div class="control-row"><button id="ack-alert" class="btn">Acknowledge Alert</button></div>
+            <div class="control-row">
+                <label for="refresh-slider"><span>Refresh Cadence</span><strong id="refresh-value">500 ms</strong></label>
+                <input id="refresh-slider" type="range" min="200" max="2000" value="500" step="100">
+            </div>
+            <div class="control-row">
+                <label for="contrast-slider"><span>Display Contrast</span><strong id="contrast-value">65%</strong></label>
+                <input id="contrast-slider" type="range" min="30" max="100" value="65" step="5">
+            </div>
+            <div class="control-row"><button id="toggle-motion" class="btn" aria-pressed="false">Reduced Motion: OFF</button></div>
+            <div class="control-row" style="font-size:12px;color:var(--text-muted);">Shortcuts: F Freeze | R Reset | A Acknowledge</div>
+        </div>
+
+        <div class="hud-panel event-log">
+            <h3 class="section-title">Audit Event Log</h3>
+            <ul id="event-log-list"></ul>
         </div>
 
         <div class="hud-panel metrics">
-            <div class="metric-card"><div class="label">Avg Power</div><div id="avg-power" class="value">-</div></div>
-            <div class="metric-card"><div class="label">Avg Stability</div><div id="avg-stability" class="value">-</div></div>
-            <div class="metric-card"><div class="label">Strongest Band</div><div id="strongest-band" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Average Power</div><div id="avg-power" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Average Stability</div><div id="avg-stability" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Strongest Frequency</div><div id="strongest-band" class="value">-</div></div>
             <div class="metric-card"><div class="label">Anomaly Ratio</div><div id="anomaly-ratio" class="value">-</div></div>
             <div class="metric-card"><div class="label">Pattern Balance</div><div id="pattern-counts" class="value">-</div></div>
-            <div class="metric-card"><div class="label">Last Update</div><div id="last-update" class="value">-</div></div>
+            <div class="metric-card"><div class="label">Last Update UTC</div><div id="last-update" class="value">-</div></div>
         </div>
 
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            Initializing spectral mesh...
-        </div>
+        <div class="loading" id="loading">Initializing mission display...</div>
     </div>
+    <div class="hud-panel classification-banner bottom">UNCLASSIFIED // FOUO (PLACEHOLDER)</div>
 
     <script>
         let updateCount = 0;
@@ -876,31 +907,44 @@ HTML_TEMPLATE = """
         let streamPaused = false;
         let autoRotate = true;
         let rotationStep = 0;
-        let glowIntensity = 0.65;
+        let displayContrast = 0.65;
+        let reducedMotion = false;
+        const maxEvents = 20;
+
+        function recordEvent(type, details) {
+            const list = document.getElementById('event-log-list');
+            const item = document.createElement('li');
+            const stamp = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+            item.innerHTML = `<strong>${type}</strong><br>${stamp}<br>${details}`;
+            list.prepend(item);
+            while (list.children.length > maxEvents) list.removeChild(list.lastChild);
+        }
 
         function startPolling() {
             if (pollingId) clearInterval(pollingId);
-            pollingId = setInterval(() => {
-                if (!streamPaused) updateVisualization();
-            }, refreshMs);
+            pollingId = setInterval(() => { if (!streamPaused) updateVisualization(); }, refreshMs);
         }
 
         function applyLayoutTweaks(layout) {
-            const opacity = Math.max(0.18, Math.min(0.95, glowIntensity));
-            const plotBg = `rgba(0, 8, 7, ${0.75 + opacity * 0.2})`;
-            layout.paper_bgcolor = plotBg;
-            layout.scene.bgcolor = `rgba(0, 8, 7, ${0.65 + opacity * 0.25})`;
+            const tone = Math.max(0.3, Math.min(1.0, displayContrast));
+            layout.paper_bgcolor = `rgba(13, 20, 32, ${0.78 + tone * 0.18})`;
+            layout.scene.bgcolor = `rgba(17, 26, 42, ${0.72 + tone * 0.2})`;
 
-            if (autoRotate) {
-                rotationStep += 0.035;
+            if (autoRotate && !reducedMotion) {
+                rotationStep += 0.025;
                 layout.scene.camera = {
                     eye: {
                         x: 1.75 * Math.cos(rotationStep),
                         y: 1.75 * Math.sin(rotationStep),
-                        z: 1.05 + 0.2 * Math.sin(rotationStep * 0.8)
+                        z: 1.1
                     }
                 };
             }
+        }
+
+        function toUtcLabel(isoString) {
+            const date = new Date(isoString);
+            return `${date.toISOString().replace('T', ' ').replace('Z', ' UTC')}`;
         }
 
         function updateVisualization() {
@@ -915,17 +959,15 @@ HTML_TEMPLATE = """
 
                     if (updateCount === 0) {
                         document.getElementById('loading').style.display = 'none';
-                        Plotly.newPlot(plotDiv, plotData.data, layout, {
-                            responsive: true,
-                            displayModeBar: true,
-                            displaylogo: false
-                        });
+                        Plotly.newPlot(plotDiv, plotData.data, layout, { responsive: true, displayModeBar: true, displaylogo: false });
                     } else {
                         Plotly.react(plotDiv, plotData.data, layout, { responsive: true, displaylogo: false });
                     }
 
                     updateCount++;
-                    document.getElementById('update-counter').textContent = `Updates: ${updateCount}`;
+                    document.getElementById('update-counter').textContent = `${updateCount}`;
+                    document.getElementById('link-health-pill').textContent = 'LINK HEALTH: NOMINAL';
+                    document.getElementById('link-health-pill').className = 'pill good';
 
                     if (data.summary) {
                         document.getElementById('avg-power').textContent = `${data.summary.average_power.toFixed(1)} dBm`;
@@ -936,26 +978,60 @@ HTML_TEMPLATE = """
                             const { emerging, fading } = data.summary.pattern_counts;
                             document.getElementById('pattern-counts').textContent = `${emerging} ↑ / ${fading} ↓`;
                         }
+                        if (data.summary.severity_counts) {
+                            const { high, medium, low } = data.summary.severity_counts;
+                            document.getElementById('anomaly-counter').textContent = `ANOMALIES H/M/L: ${high}/${medium}/${low}`;
+                        }
                     }
 
                     if (data.timestamp) {
-                        const localTime = new Date(data.timestamp).toLocaleTimeString();
-                        document.getElementById('last-update').textContent = localTime;
-                        document.getElementById('last-update-pill').textContent = `SYNC ${localTime}`;
+                        const utcLabel = toUtcLabel(data.timestamp);
+                        document.getElementById('last-update').textContent = utcLabel;
+                        document.getElementById('last-update-pill').textContent = `DATA UTC: ${utcLabel.slice(11, 19)}`;
                     }
 
-                    document.getElementById('anomaly-counter').textContent = data.num_anomalies ?? 0;
+                    if (typeof data.data_age_seconds === 'number') {
+                        document.getElementById('data-age-pill').textContent = `DATA AGE: ${data.data_age_seconds.toFixed(1)}s`;
+                    }
+
+                    const stale = Boolean(data.stale);
+                    document.getElementById('stale-warning').textContent = stale ? 'YES' : 'NO';
+                    if (stale) {
+                        document.getElementById('data-age-pill').className = 'pill attention';
+                        recordEvent('connection degradation', 'No new sample within stale-data threshold.');
+                    } else {
+                        document.getElementById('data-age-pill').className = 'pill';
+                    }
+
+                    if (data.provenance) {
+                        document.getElementById('sensor-id').textContent = data.provenance.sensor_id;
+                        document.getElementById('firmware-version').textContent = data.provenance.firmware_version;
+                        document.getElementById('acquisition-source').textContent = data.provenance.acquisition_source;
+                    }
+
+                    const sourceMode = data.source_mode || 'SIMULATED';
+                    document.getElementById('source-mode-pill').textContent = `MODE: ${sourceMode}`;
+                    document.getElementById('simulation-watermark').style.display = sourceMode === 'SIMULATED' ? 'flex' : 'none';
+
+                    if (Array.isArray(data.anomaly_details) && data.anomaly_details.length) {
+                        const highest = data.anomaly_details[0];
+                        recordEvent('anomaly detected', `${highest.frequency_mhz} MHz, severity ${highest.severity}, confidence ${highest.confidence}`);
+                    }
                 })
                 .catch(error => {
                     console.error('Error updating visualization:', error);
                     document.getElementById('last-update').textContent = 'Connection issue';
-                    document.getElementById('last-update-pill').textContent = 'LINK DEGRADED';
+                    document.getElementById('link-health-pill').textContent = 'LINK HEALTH: DEGRADED';
+                    document.getElementById('link-health-pill').className = 'pill attention';
+                    recordEvent('connection degradation', 'Failed to fetch /api/spectrum endpoint.');
                 });
         }
 
         document.getElementById('toggle-stream').addEventListener('click', (event) => {
             streamPaused = !streamPaused;
-            event.target.textContent = streamPaused ? 'Resume Stream' : 'Pause Stream';
+            event.target.textContent = streamPaused ? 'Resume Feed' : 'Freeze Feed';
+            document.getElementById('stream-state').textContent = streamPaused ? 'FROZEN' : 'LIVE';
+            recordEvent('operator action', streamPaused ? 'Feed frozen by operator.' : 'Feed resumed by operator.');
             if (!streamPaused) updateVisualization();
         });
 
@@ -969,11 +1045,12 @@ HTML_TEMPLATE = """
             refreshMs = Number(event.target.value);
             document.getElementById('refresh-value').textContent = `${refreshMs} ms`;
             startPolling();
+            recordEvent('threshold change', `Refresh cadence adjusted to ${refreshMs} ms.`);
         });
 
-        document.getElementById('glow-slider').addEventListener('input', (event) => {
-            glowIntensity = Number(event.target.value) / 100;
-            document.getElementById('glow-value').textContent = `${event.target.value}%`;
+        document.getElementById('contrast-slider').addEventListener('input', (event) => {
+            displayContrast = Number(event.target.value) / 100;
+            document.getElementById('contrast-value').textContent = `${event.target.value}%`;
         });
 
         document.getElementById('reset-camera').addEventListener('click', () => {
@@ -983,14 +1060,31 @@ HTML_TEMPLATE = """
             btn.textContent = 'Auto-Rotate: ON';
             btn.setAttribute('aria-pressed', 'true');
             updateVisualization();
+            recordEvent('operator action', 'Camera reset to baseline view.');
         });
 
+        document.getElementById('ack-alert').addEventListener('click', () => {
+            recordEvent('operator action', 'Alert acknowledged by operator.');
+        });
+
+        document.getElementById('toggle-motion').addEventListener('click', (event) => {
+            reducedMotion = !reducedMotion;
+            document.body.classList.toggle('reduced-motion', reducedMotion);
+            event.target.textContent = `Reduced Motion: ${reducedMotion ? 'ON' : 'OFF'}`;
+            event.target.setAttribute('aria-pressed', reducedMotion);
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.target.tagName === 'INPUT') return;
+            if (event.key.toLowerCase() === 'f') document.getElementById('toggle-stream').click();
+            if (event.key.toLowerCase() === 'r') document.getElementById('reset-camera').click();
+            if (event.key.toLowerCase() === 'a') document.getElementById('ack-alert').click();
+        });
+
+        recordEvent('operator action', 'Mission console initialized.');
         updateVisualization();
         startPolling();
-
-        window.addEventListener('resize', () => {
-            Plotly.Plots.resize(document.getElementById('plot'));
-        });
+        window.addEventListener('resize', () => { Plotly.Plots.resize(document.getElementById('plot')); });
     </script>
 </body>
 </html>
@@ -1028,7 +1122,12 @@ def get_spectrum():
             'status': 'active',
             'num_anomalies': spectral_state['num_anomalies'],
             'summary': spectral_state['summary'],
-            'timestamp': spectral_state['timestamp']
+            'timestamp': spectral_state['timestamp'],
+            'data_age_seconds': spectral_state.get('data_age_seconds'),
+            'stale': spectral_state.get('stale'),
+            'source_mode': spectral_state.get('source_mode'),
+            'provenance': spectral_state.get('provenance'),
+            'anomaly_details': spectral_state.get('anomaly_details', [])
         })
     except Exception as e:
         logger.error(f"API error: {e}")
