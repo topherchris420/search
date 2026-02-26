@@ -125,7 +125,9 @@ class SpectralNode:
     pattern: str         # "emerging", "fading", "stable"
     trend: float         # temporal trend slope
     position: Tuple[float, float, float]  # 3D coordinates
-    history: deque         # Recent power measurements
+    history: np.ndarray    # Pre-allocated power measurements array
+    history_idx: int = 0   # Current insertion index for ring buffer
+    history_len: int = 0   # Current number of valid samples in history
 
 
 @dataclass
@@ -191,7 +193,9 @@ class RFProcessor:
                 pattern="stable",
                 trend=0.0,
                 position=position,
-                history=deque(maxlen=self.config.WINDOW_SIZE)
+                history=np.zeros(self.config.WINDOW_SIZE),
+                history_idx=0,
+                history_len=0
             )
             bands.append(node)
         
@@ -203,14 +207,21 @@ class RFProcessor:
             for i, node in enumerate(self.bands):
                 if i < len(power_data):
                     power = power_data[i]
-                    node.history.append(power)
+
+                    # Update ring buffer
+                    node.history[node.history_idx] = power
+                    node.history_idx = (node.history_idx + 1) % len(node.history)
+                    if node.history_len < len(node.history):
+                        node.history_len += 1
+
                     node.power = power
                     
                     # Compute statistics
-                    if len(node.history) >= 10:
-                        history_array = np.array(node.history)
-                        node.baseline = np.median(history_array)
-                        node.variance = np.var(history_array)
+                    if node.history_len >= 10:
+                        # Use valid portion of the history (view)
+                        h_view = node.history[:node.history_len]
+                        node.baseline = np.median(h_view)
+                        node.variance = np.var(h_view)
                         
                         # Anomaly score (z-score)
                         std = np.sqrt(node.variance) if node.variance > 0 else 1.0
@@ -220,7 +231,7 @@ class RFProcessor:
                         normalized_var = node.variance / (abs(node.baseline) + 1e-6)
                         node.stability = max(0, 1 - normalized_var / self.config.STABILITY_THRESHOLD)
 
-                        node.trend = self._compute_trend(history_array)
+                        node.trend = self._compute_trend(node)
                         if node.trend > 0.08:
                             node.pattern = "emerging"
                         elif node.trend < -0.08:
@@ -229,11 +240,24 @@ class RFProcessor:
                             node.pattern = "stable"
 
     @staticmethod
-    def _compute_trend(history: np.ndarray) -> float:
-        """Estimate trend with linear fit over normalized time."""
-        if len(history) < 5:
+    def _compute_trend(node: SpectralNode) -> float:
+        """Estimate trend with linear fit over normalized time using ring buffer."""
+        if node.history_len < 5:
             return 0.0
-        y = history[-25:] if len(history) >= 25 else history
+
+        # Extract last 25 samples chronologically
+        n = len(node.history)
+        count = min(25, node.history_len)
+
+        # Current index is where the NEXT element will be written
+        end = node.history_idx
+        start = (end - count) % n
+
+        if start < end:
+            y = node.history[start:end]
+        else:
+            y = np.concatenate((node.history[start:], node.history[:end]))
+
         x = np.linspace(0.0, 1.0, len(y))
         slope, _ = np.polyfit(x, y, 1)
         return float(slope)
