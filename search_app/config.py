@@ -62,7 +62,7 @@ class Settings:
             app_name=os.getenv("APP_NAME", "Semantic Ontology Search"),
             environment=os.getenv("APP_ENV", "production"),
             zero_trust_enabled=_env_bool("ZERO_TRUST_ENABLED", True),
-            api_key=os.getenv("ZERO_TRUST_API_KEY", "change-me-in-production"),
+            api_key=os.getenv("ZERO_TRUST_API_KEY", "change-me-in-production").strip(),
             allowed_origins=_env_list("ALLOWED_ORIGINS", ["http://localhost:5000"]),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             cache_ttl_seconds=_env_int("CACHE_TTL_SECONDS", 120, minimum=30),
