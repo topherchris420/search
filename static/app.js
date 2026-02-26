@@ -466,11 +466,13 @@
 
     if (token) {
       headers.Authorization = `Bearer ${token}`;
+      headers["X-API-Key"] = token;
       sessionStorage.setItem(TOKEN_KEY, token);
     }
 
     if (window.APP_CONFIG?.zeroTrustEnabled && !token) {
-      throw new Error("API key is required because zero-trust mode is enabled.");
+      const hint = window.APP_CONFIG?.authHint ? ` ${window.APP_CONFIG.authHint}` : "";
+      throw new Error(`API key is required because zero-trust mode is enabled.${hint}`);
     }
 
     let lastError;
@@ -484,7 +486,13 @@
         const payload = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          const message = payload.error || `Request failed with status ${response.status}`;
+          let message = payload.error || `Request failed with status ${response.status}`;
+          if (response.status === 401) {
+            const hint = window.APP_CONFIG?.authHint || "Use the ZERO_TRUST_API_KEY value in the API key field.";
+            if (!message.toLowerCase().includes("zero_trust_api_key")) {
+              message = `${message} ${hint}`;
+            }
+          }
           throw new Error(message);
         }
 
@@ -999,13 +1007,17 @@
     const savedToken = sessionStorage.getItem(TOKEN_KEY);
     if (savedToken) {
       elements.apiKey.value = savedToken;
+    } else if (window.APP_CONFIG?.bootstrapApiKey) {
+      elements.apiKey.value = window.APP_CONFIG.bootstrapApiKey;
+      sessionStorage.setItem(TOKEN_KEY, window.APP_CONFIG.bootstrapApiKey);
     }
 
     parseUrlState();
     bindEvents();
 
     if (window.APP_CONFIG?.zeroTrustEnabled && !elements.apiKey.value.trim()) {
-      setError("Enter API key to load filters and start semantic search.");
+      const hint = window.APP_CONFIG?.authHint ? ` ${window.APP_CONFIG.authHint}` : "";
+      setError(`Enter API key to load filters and start semantic search.${hint}`);
       refreshFilterSelects();
       setSceneMode("idle", false);
       setSceneEnergy(0.24);

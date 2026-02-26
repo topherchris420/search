@@ -47,11 +47,24 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/")
     def index() -> Any:
+        bootstrap_api_key = ""
+        auth_hint = ""
+        if settings.zero_trust_enabled:
+            auth_hint = "Use the same value configured in ZERO_TRUST_API_KEY."
+            if settings.api_key == "change-me-in-production":
+                bootstrap_api_key = settings.api_key
+                auth_hint = (
+                    "Default local key loaded automatically. "
+                    "Set ZERO_TRUST_API_KEY to a unique secret for production."
+                )
+
         return render_template(
             "index.html",
             app_name=settings.app_name,
             zero_trust_enabled=settings.zero_trust_enabled,
             default_page_size=settings.default_page_size,
+            bootstrap_api_key=bootstrap_api_key,
+            auth_hint=auth_hint,
         )
 
     @app.errorhandler(ValidationError)
