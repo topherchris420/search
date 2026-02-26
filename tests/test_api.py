@@ -73,3 +73,13 @@ def test_reindex(client, auth_headers):
     body = response.get_json()
     assert body["status"] == "ok"
     assert body["documents_indexed"] >= 1
+
+
+def test_auth_accepts_quoted_bearer_token(client):
+    response = client.get("/api/filters", headers={"Authorization": 'Bearer "test-token"'})
+    assert response.status_code == 200
+
+
+def test_auth_accepts_quoted_api_key(client):
+    response = client.get("/api/filters", headers={"X-API-Key": '"test-token"'})
+    assert response.status_code == 200

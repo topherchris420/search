@@ -92,9 +92,9 @@ def get_client_ip(req: Request) -> str:
 def extract_token(req: Request) -> str:
     bearer = req.headers.get("Authorization", "").strip()
     if bearer.lower().startswith("bearer "):
-        return bearer[7:].strip()
+        return bearer[7:].strip().strip('"').strip("'")
     api_key = req.headers.get("X-API-Key", "").strip()
-    return api_key
+    return api_key.strip('"').strip("'")
 
 
 def secure_endpoint(settings: Settings, rate_limiter: RateLimiter) -> Callable:
