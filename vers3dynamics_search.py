@@ -777,14 +777,14 @@ HTML_TEMPLATE = """
         <div class="hud-panel controls">
             <div class="control-row"><button id="toggle-stream" class="btn">Pause Stream</button></div>
             <div class="control-row">
-                <label><span>Refresh Rate</span><strong id="refresh-value">500 ms</strong></label>
+                <label for="refresh-slider"><span>Refresh Rate</span><strong id="refresh-value">500 ms</strong></label>
                 <input id="refresh-slider" type="range" min="200" max="1500" value="500" step="100">
             </div>
             <div class="control-row">
-                <label><span>Glow Intensity</span><strong id="glow-value">65%</strong></label>
+                <label for="glow-slider"><span>Glow Intensity</span><strong id="glow-value">65%</strong></label>
                 <input id="glow-slider" type="range" min="20" max="100" value="65" step="5">
             </div>
-            <div class="control-row"><button id="toggle-rotate" class="btn">Auto-Rotate: ON</button></div>
+            <div class="control-row"><button id="toggle-rotate" class="btn" aria-pressed="true">Auto-Rotate: ON</button></div>
             <div class="control-row"><button id="reset-camera" class="btn">Reset Camera</button></div>
         </div>
 
@@ -896,6 +896,7 @@ HTML_TEMPLATE = """
         document.getElementById('toggle-rotate').addEventListener('click', (event) => {
             autoRotate = !autoRotate;
             event.target.textContent = `Auto-Rotate: ${autoRotate ? 'ON' : 'OFF'}`;
+            event.target.setAttribute('aria-pressed', autoRotate);
         });
 
         document.getElementById('refresh-slider').addEventListener('input', (event) => {
@@ -912,7 +913,9 @@ HTML_TEMPLATE = """
         document.getElementById('reset-camera').addEventListener('click', () => {
             rotationStep = 0;
             autoRotate = true;
-            document.getElementById('toggle-rotate').textContent = 'Auto-Rotate: ON';
+            const btn = document.getElementById('toggle-rotate');
+            btn.textContent = 'Auto-Rotate: ON';
+            btn.setAttribute('aria-pressed', 'true');
             updateVisualization();
         });
 
